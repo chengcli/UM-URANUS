@@ -1,0 +1,55 @@
+{
+  "normalization_methods": {
+    "col1": "symlog",
+    "col2": "standard",
+    "col3": "standard",
+    "col0": "standard"
+  },
+  "per_key_stats": {
+    "col1": {
+      "method": "symlog",
+      "epsilon": 1e-09,
+      "threshold": 1.0000000000000001e-07,
+      "scale_factor": 1.888831377029419
+    },
+    "col2": {
+      "method": "standard",
+      "epsilon": 1e-09,
+      "mean": 0.5386345982551575,
+      "std": 0.2876051746237154
+    },
+    "col3": {
+      "method": "standard",
+      "epsilon": 1e-09,
+      "mean": 0.5454646944999695,
+      "std": 0.2685113709805717
+    },
+    "col0": {
+      "method": "standard",
+      "epsilon": 1e-09,
+      "mean": 75.00289916992188,
+      "std": 27.691502481761777
+    }
+  },
+  "dataset_metadata": {
+    "total_train_profiles": 700000,
+    "variables": [
+      "col3",
+      "col2",
+      "col1",
+      "col0"
+    ],
+    "sequence_lengths": {
+      "col3": null,
+      "col2": null,
+      "col1": {
+        "min": 100,
+        "max": 100
+      },
+      "col0": {
+        "min": 100,
+        "max": 100
+      }
+    }
+  }
+}

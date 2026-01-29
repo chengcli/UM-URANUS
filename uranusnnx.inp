@@ -1,0 +1,100 @@
+<comment>
+problem   = Radiative transfer uranus
+reference = Straka et al., 1993
+configure = --patch=drum --coord=spherical_polar --prob=hjupiter --flux=lmars --nghost=3 --pnetcdf_path=../pnetcdf -pnetcdf -mpi
+
+<job>
+problem_id = rturanusx18   # problem ID: basename of output filenames
+
+<output1>
+file_type  = hst          # History data dump
+dt         = 5E3      # time increment between outputs
+
+<output2>
+file_type  = netcdf      # Binary data dump
+variable   = prim         # variables to be output
+dt         = 5E3    # time increment between outputs
+layout     = par
+
+
+<output3>
+file_type  = netcdf
+variable   = uov
+dt         = 5E3
+layout     = par
+
+
+<output4>
+file_type  = rst
+dt         = 5E3
+
+
+<time>
+cfl_number = 0.5          # The Courant, Friedrichs, & Lewy (CFL) Number
+nlim       = -1           # cycle limit
+tlim       = 4E10     # time limit
+xorder     = 5            # horizontal reconstruction order
+integrator = rk3          # integration method
+
+<mesh>
+nx1        = 22          # Number of zones in X1-direction
+x1min      = 2.4973E7         # minimum value of X1
+x1max      = 2.5023E7       # maximum value of X1
+ix1_bc     = reflecting   # inner-X1 boundary flag
+ox1_bc     = reflecting   # outer-X1 boundary flaga
+
+nx2        = 96           # Number of zones in X2-direction
+x2min      = 0.     # minimum value of X2
+x2max      = 1.E3      # maximum value of X2
+ix2_bc     = periodic        # inner-X2 boundary flag
+ox2_bc     = periodic        # outer-X2 boundary flag
+
+nx3        = 144          # Number of zones in X3-direction
+x3min      = 0.0          # minimum value of X3
+x3max      = 1.E3      # maximum value of X3
+ix3_bc     = periodic     # inner-X3 boundary flag
+ox3_bc     = periodic     # outer-X3 boundary flag
+
+ReferencePressure = 1.E5
+PressureScaleHeight = 2.5E4
+
+<meshblock>
+nx1        = 22
+nx2        = 12
+nx3        = 12
+
+<hydro>
+grav_acc1   = -9.19        #Polar gravity (de Pater Planetary Sciences textbook)
+gamma       = 1.456        # gamma = C_p/C_v, (Justh, 2021) heat capacity ratio, NOT adiabatic lapse rate
+implicit_flag = 9
+
+<thermodynamics>
+Rd          = 3587.   # mu = 2.3175 g/mol, 3402.368 Gas constant (Justh 2021)
+
+
+
+<problem>
+T1bar       = 60.
+Ts          = 59.            # Surface temperature at equilibrium, K
+Tint        = 80.             #Initial temperature at Surface 
+P0          = 8.5E5             # Surface pressure, Pa (by convention)
+Rp          = 2.4973E7            # Polar Planetary Radius, m (de Pater textbook), should be greater than x1min, otherwise division by zero
+eq_heat_flux= 0.    #Equilibrium heat flux (de Pater textbook planetary sciences)
+sday        = 62092. #Sidereal day in seconds (Lamy 2024)
+syear       = 2.5759E9 #Sidereal year in seconds (Yoder 1995)
+emissivity  = 0.90 #Jupiter is 0.27 (Taylor 1965)
+adtdz = 0.001
+spinupflux = 0
+initheatdecay = 2.E8
+sponge_tau = 3.5E3 #taken from hot jupiter case, must always be greater than dt!
+spongeheight = 40.E3
+tempmean = 75.00289916992188
+tempstd = 27.691502481761777
+heatthr = 1.0000000000000001e-07
+heatsf = 1.888831377029419
+fluxmean = 0.5386345982551575
+fluxstd = 0.2876051746237154
+umumean = 0.5454646944999695
+umustd = 0.2685113709805717
+out2 = uranus2s.out2.00026.nc
+out3 = uranus2s.out3.00026.nc
