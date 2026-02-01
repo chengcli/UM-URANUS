@@ -1,0 +1,111 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: canoe
+spec:
+  clusterIP: None
+  selector:
+    app: canoe
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: canoe
+spec:
+  serviceName: canoe
+  replicas: 2
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: canoe
+  template:
+    metadata:
+      labels:
+        app: canoe
+
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - csrwks2024-0242.engin.umich.edu
+                      - csrwks2024-0243.engin.umich.edu
+                      - csrwks2024-0244.engin.umich.edu
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: canoe
+              topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: canoe
+          image: YOUR_IMAGE:TAG
+          imagePullPolicy: IfNotPresent
+
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              cpu: "2"
+              memory: "20Gi"
+
+          env:
+            - name: EXE
+              value: python
+
+            - name: MASTER_ADDR
+              value: canoe-0.canoe
+            - name: MASTER_PORT
+              value: "29500"
+            - name: WORLD_SIZE
+              value: "6"
+            - name: GPUS_PER_NODE
+              value: "2"
+            - name: CUDA_VISIBLE_DEVICES
+              value: "0,1"
+
+            - name: NCCL_DEBUG
+              value: INFO
+            - name: NCCL_SOCKET_IFNAME
+              value: eth0
+            - name: NCCL_IB_DISABLE
+              value: "1"
+
+          volumeMounts:
+            - name: model-data
+              mountPath: /data
+
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+
+              NODE_RANK="${HOSTNAME##*-}"
+
+              echo "NODE_RANK=${NODE_RANK}"
+              echo "WORLD_SIZE=${WORLD_SIZE}"
+
+              for LOCAL_RANK in 0 1; do
+                RANK=$(( NODE_RANK * GPUS_PER_NODE + LOCAL_RANK ))
+
+                echo "Launching RANK=${RANK} LOCAL_RANK=${LOCAL_RANK}"
+
+                RANK=${RANK} \
+                LOCAL_RANK=${LOCAL_RANK} \
+                WORLD_SIZE=${WORLD_SIZE} \
+                MASTER_ADDR=${MASTER_ADDR} \
+                MASTER_PORT=${MASTER_PORT} \
+                CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} \
+                echo "DONE" &
+              done
+
+              wait
+
+      volumes:
+        - name: model-data
+          hostPath:
+            path: /home/chengcli/data
+            type: Directory

@@ -1,0 +1,144 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: canoe
+  labels:
+    app: canoe
+spec:
+  clusterIP: None
+  selector:
+    app: canoe
+  ports:
+    - name: rdzv
+      port: 29400
+      targetPort: 29400
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: canoe
+spec:
+  serviceName: canoe
+  replicas: 2
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: canoe
+  template:
+    metadata:
+      labels:
+        app: canoe
+    spec:
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+
+      # Only schedule on your three nodes (hard constraint)
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - csrwks2024-0242.engin.umich.edu
+                      - csrwks2024-0243.engin.umich.edu
+                      - csrwks2024-0244.engin.umich.edu
+
+        # Force one canoe-pod per physical node (hard constraint)
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: canoe
+              topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: canoe
+          image: docker.io/luminoctum/ubuntu22.04-cuda12.9-py3.10-canoe:2026-01-31b
+          imagePullPolicy: IfNotPresent
+
+          resources:
+            requests:
+              cpu: "2"
+              memory: "20Gi"
+              nvidia.com/gpu: "2"
+            limits:
+              cpu: "2"
+              memory: "20Gi"
+              nvidia.com/gpu: "2"
+
+          env:
+            - name: NCCL_DEBUG
+              value: INFO
+            - name: TORCH_DISTRIBUTED_DEBUG
+              value: INFO
+            - name: NCCL_ASYNC_ERROR_HANDLING
+              value: "1"
+            # Change if your inter-node NIC isn't eth0 (see note below)
+            - name: NCCL_SOCKET_IFNAME
+              value: "eth0"
+            # If you do NOT have InfiniBand/RDMA:
+            - name: NCCL_IB_DISABLE
+              value: "1"
+            - name: WORLD_SIZE
+              value: "6"
+
+          ports:
+            - containerPort: 29400
+              name: rdzv
+
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: model-data
+              mountPath: /data
+
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+
+              # canoe-0 / canoe-1 / canoe-2
+              NODE_RANK="${HOSTNAME##*-}"
+              RDZV_ENDPOINT="gcm-0.gcm:29400"
+
+              echo "=== distributed settings ==="
+              echo "HOSTNAME=${HOSTNAME}"
+              echo "NODE_RANK=${NODE_RANK}"
+              echo "RDZV_ENDPOINT=${RDZV_ENDPOINT}"
+
+              # If you need a venv inside the container, activate it:
+              source /opt/venv/bin/activate
+
+              torchrun \
+                --nnodes=3 \
+                --nproc_per_node=2 \
+                --node_rank="${NODE_RANK}" \
+                --rdzv_backend=c10d \
+                --rdzv_endpoint="${RDZV_ENDPOINT}" \
+                --rdzv_id="k3s-train-001" \
+                /workspace/train.py \
+                --config /workspace/config.yaml
+              for (( RANK=0; RANK<${WORLD_SIZE}; RANK++ )); do
+                LOCAL_RANK=$(( RANK % ${#GPU_LIST[@]} ))
+                RANK=$RANK \
+                WORLD_SIZE=$WORLD_SIZE \
+                LOCAL_RANK=$LOCAL_RANK \
+                BACKEND=$BACKEND \
+                MASTER_ADDR=$MASTER_ADDR \
+                MASTER_PORT=$MASTER_PORT \
+                CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES \
+                python ${ALL_OHTER_ARGS} &
+              done
+
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "8Gi"
+
+        - name: model-data
+          hostPath:
+            path: /home/chengcli/data
+            type: Directory
