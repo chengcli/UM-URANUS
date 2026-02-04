@@ -3,3 +3,9 @@
 
 # nc files
 *.nc
+
+# log
+*.log
+
+# env
+.env
