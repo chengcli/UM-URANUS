@@ -84,6 +84,6 @@ forcing:
     grav1: -22.
 
 problem:
-  Ps: 100.e5
-  Ts: 600.
-  Tmin: 110.
+  Ps: 8.5e5
+  Ts: 150.
+  Tmin: 50.

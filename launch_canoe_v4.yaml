@@ -69,14 +69,27 @@ spec:
               memory: "20Gi"
 
           env:
-            # Optional: limit to the two GPUs that k8s assigns (usually 0,1 in-container)
-            - name: CUDA_VISIBLE_DEVICES
-              value: "0,1,2,3"
-
             - name: NAMESPACE
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+
+            - name: TP_SOCKET_IFNAME
+              value: "eth0"
+
+            - name: GLOO_SOCKET_IFNAME
+              value: "eth0"
+
+            - name: NCCL_SOCKET_IFNAME
+              value: "eth0"
+
+            - name: NCCL_IB_DISABLE
+              value: "1"
 
           volumeMounts:
             - name: model-data
@@ -90,13 +103,14 @@ spec:
               set -euo pipefail
 
               NODE_RANK="${HOSTNAME##*-}"
-              RDZV_ENDPOINT="canoe-0.canoe.${NAMESPACE}.svc:29500"
+              #RDZV_MASTER_IP=$(nslookup canoe-0.canoe.${NAMESPACE}.svc.cluster.local | grep 'Address' | tail -n1 | awk '{print $2}')
+              RDZV_ENDPOINT="10.42.1.40:29500"
               RDZV_ID="canoe-2026-01-31"
 
+              echo "$POD_IP"
               echo "HOSTNAME=${HOSTNAME}"
               echo "NODE_RANK=${NODE_RANK}"
               echo "RDZV_ENDPOINT=${RDZV_ENDPOINT}"
-              echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 
               torchrun \
                 --nnodes=2 \
