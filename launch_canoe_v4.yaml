@@ -1,0 +1,132 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: canoe
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: canoe
+  ports:
+    - name: rdzv
+      port: 29500
+      targetPort: 29500
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: canoe
+spec:
+  serviceName: canoe
+  replicas: 2
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: canoe
+  template:
+    metadata:
+      labels:
+        app: canoe
+    spec:
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - csrwks2024-0242.engin.umich.edu
+                      - csrwks2024-0243.engin.umich.edu
+                      - csrwks2024-0244.engin.umich.edu
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: canoe
+              topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: canoe
+          image: luminoctum/ubuntu22.04-cuda12.9-py3.10-canoe:2026-01-31b
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: rdzv
+              containerPort: 29500
+
+          resources:
+            requests:
+              nvidia.com/gpu: 1
+              cpu: "2"
+              memory: "20Gi"
+            limits:
+              nvidia.com/gpu: 1
+              cpu: "2"
+              memory: "20Gi"
+
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+
+            - name: TP_SOCKET_IFNAME
+              value: "eth0"
+
+            - name: GLOO_SOCKET_IFNAME
+              value: "eth0"
+
+            - name: NCCL_SOCKET_IFNAME
+              value: "eth0"
+
+            - name: NCCL_IB_DISABLE
+              value: "1"
+
+          volumeMounts:
+            - name: model-data
+              mountPath: /data
+            - name: dshm
+              mountPath: /dev/shm
+
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+
+              NODE_RANK="${HOSTNAME##*-}"
+              #RDZV_MASTER_IP=$(nslookup canoe-0.canoe.${NAMESPACE}.svc.cluster.local | grep 'Address' | tail -n1 | awk '{print $2}')
+              RDZV_ENDPOINT="10.42.1.40:29500"
+              RDZV_ID="canoe-2026-01-31"
+
+              echo "$POD_IP"
+              echo "HOSTNAME=${HOSTNAME}"
+              echo "NODE_RANK=${NODE_RANK}"
+              echo "RDZV_ENDPOINT=${RDZV_ENDPOINT}"
+
+              torchrun \
+                --nnodes=2 \
+                --nproc_per_node=1 \
+                --node_rank="${NODE_RANK}" \
+                --rdzv_backend=c10d \
+                --rdzv_endpoint="${RDZV_ENDPOINT}" \
+                --rdzv_id="${RDZV_ID}" \
+                straka.py
+
+      volumes:
+        - name: model-data
+          hostPath:
+            path: /home/chengcli/data
+            type: Directory
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "8Gi"
