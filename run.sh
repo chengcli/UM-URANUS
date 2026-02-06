@@ -22,7 +22,7 @@ torchrun \
     --node_rank=$NODE_RANK \
     --master_addr=$MASTER_ADDR \
     --master_port=$MASTER_PORT \
-    ./run_hydro.py -i uranus_gcm_dry.yaml > a.log 2>&1
+    ./run_hydro.py -i jupiter_gcm_dry.yaml > a.log 2>&1
 
 echo "DONE"
 #sleep 10
