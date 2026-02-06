@@ -7,7 +7,7 @@ networks:
 
 services:
   captain:
-    image: luminoctum/ubuntu22.04-cuda12.9-py3.10-canoe:2026-02-03
+    image: luminoctum/ubuntu22.04-cuda12.9-py3.10-canoe:2026-02-06
     entrypoint: ["/bin/bash"]
     user: "${USER_UID}:${USER_GID}"
     networks:
@@ -39,7 +39,7 @@ services:
     working_dir: /work
 
   crew1:
-    image: luminoctum/ubuntu22.04-cuda12.9-py3.10-canoe:2026-02-03
+    image: luminoctum/ubuntu22.04-cuda12.9-py3.10-canoe:2026-02-06
     entrypoint: ["/bin/bash"]
     user: "${USER_UID}:${USER_GID}"
     networks:
@@ -71,7 +71,7 @@ services:
     working_dir: /work
 
   crew2:
-    image: luminoctum/ubuntu22.04-cuda12.9-py3.10-canoe:2026-02-03
+    image: luminoctum/ubuntu22.04-cuda12.9-py3.10-canoe:2026-02-06
     entrypoint: ["/bin/bash"]
     user: "${USER_UID}:${USER_GID}"
     networks:
