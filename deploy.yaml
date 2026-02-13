@@ -35,7 +35,7 @@ services:
       - NCCL_SOCKET_IFNAME=eth0
     volumes:
       - .:/work
-      #- nfs:/data
+      - /mnt/data1:/data
     working_dir: /work
 
   crew1:
@@ -67,7 +67,7 @@ services:
       - NCCL_SOCKET_IFNAME=eth0
     volumes:
       - .:/work
-      #- nfs:/data
+      - /mnt/data1:/data
     working_dir: /work
 
   crew2:
@@ -99,13 +99,5 @@ services:
       - NCCL_SOCKET_IFNAME=eth0
     volumes:
       - .:/work
-      #- nfs:/data
+      - /mnt/data1:/data
     working_dir: /work
-
-volumes:
-  nfs:
-    driver: local
-    driver_opts:
-      type: "nfs"
-      o: "addr=coe-chengcli.turbo.storage.umich.edu,nfsvers=3,rw,nolock,soft"
-      device: ":/coe-chengcli"
