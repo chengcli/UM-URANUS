@@ -11,4 +11,4 @@
 .env
 
 # pt file
-.pt
+*.pt
