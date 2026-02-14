@@ -1,15 +1,13 @@
 import torch
-
 import yaml
-
 import argparse
+import os
 from snapy import MeshBlockOptions, MeshBlock, kICY, kIV1
 from kintera import ThermoX, KineticsOptions, Kinetics
 from paddle import (
     setup_profile,
     evolve_kinetics,
 )
-
 
 def call_user_output(bvars: dict[str, torch.Tensor]):
     hydro_w = bvars["hydro_w"]
@@ -18,12 +16,16 @@ def call_user_output(bvars: dict[str, torch.Tensor]):
     return out
 
 
-def run_with(infile: str, restart_file:str):
-    with open(infile, "r") as f:
+def run_hydro_with(config_file:str, input_dir:str, output_dir:str,
+                   verbose: bool):
+    RESTART_FILE = f"{input_dir}/next.restart"
+    TOPO_FILE = f"{input_dir}/topo.pt"
+
+    with open(config_file, "r") as f:
         config = yaml.safe_load(f)
 
     # set hydrodynamic options
-    op = MeshBlockOptions.from_yaml(infile)
+    op = MeshBlockOptions.from_yaml(config_file, verbose)
     block = MeshBlock(op)
 
     # use cuda if available
@@ -46,8 +48,8 @@ def run_with(infile: str, restart_file:str):
 
     block_vars = {}
 
-    if restart_file != '':
-        module = torch.jit.load(restart_file)
+    if os.path.exists(RESTART_FILE):
+        module = torch.jit.load(RESTART_FILE)
         for name, data in module.named_buffers():
             block_vars[name] = data.to(device)
     else:
@@ -68,7 +70,7 @@ def run_with(infile: str, restart_file:str):
     block.set_user_output_func(call_user_output)
 
     # kinetics model
-    op_kinet = KineticsOptions.from_yaml(infile)
+    op_kinet = KineticsOptions.from_yaml(config_file)
     kinet = Kinetics(op_kinet)
     kinet.to(device)
 
@@ -103,17 +105,26 @@ def main():
     # parse arguments
     parser = argparse.ArgumentParser(description="Run hydrodynamic simulation.")
     parser.add_argument(
-        "-i", "--infile", type=str, 
-        required=True, help="Input YAML configuration file."
+        "-c", "--config", type=str, 
+        required=True, help="YAML configuration file."
     )
     parser.add_argument(
-        "-r", "--restart", type=str, 
-        required=False, help="Restart from restart dump.",
-        default=""
+        "-i", "--input_dir", type=str,
+        default='./input', help="input directory."
     )
-    args = parser.parse_args()
-    run_with(args.infile, args.restart)
+    parser.add_argument(
+        "-o", "--output_dir", type=str,
+        default='./output', help="output directory."
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="print verbose debug information"
+        )
 
+    args = parser.parse_args()
+
+    run_hydro_with(args.config, args.input_dir, args.output_dir,
+                   args.verbose)
 
 if __name__ == "__main__":
     main()
