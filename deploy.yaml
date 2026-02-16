@@ -7,7 +7,7 @@ networks:
 
 services:
   captain:
-    image: luminoctum/ubuntu22.04-cuda12.9-py3.10-canoe:2026-02-06
+    image: luminoctum/ubuntu22.04-cuda12.9-py3.10-canoe:2026-02-16
     entrypoint: ["/bin/bash"]
     user: "${USER_UID}:${USER_GID}"
     networks:
@@ -35,11 +35,11 @@ services:
       - NCCL_SOCKET_IFNAME=eth0
     volumes:
       - .:/work
-      - /mnt/data1:/data
+      - /mnt/data1/cli/2026.UranusGCM:/data
     working_dir: /work
 
   crew1:
-    image: luminoctum/ubuntu22.04-cuda12.9-py3.10-canoe:2026-02-06
+    image: luminoctum/ubuntu22.04-cuda12.9-py3.10-canoe:2026-02-16
     entrypoint: ["/bin/bash"]
     user: "${USER_UID}:${USER_GID}"
     networks:
@@ -67,11 +67,11 @@ services:
       - NCCL_SOCKET_IFNAME=eth0
     volumes:
       - .:/work
-      - /mnt/data1:/data
+      - /mnt/data1/cli/2026.UranusGCM:/data
     working_dir: /work
 
   crew2:
-    image: luminoctum/ubuntu22.04-cuda12.9-py3.10-canoe:2026-02-06
+    image: luminoctum/ubuntu22.04-cuda12.9-py3.10-canoe:2026-02-16
     entrypoint: ["/bin/bash"]
     user: "${USER_UID}:${USER_GID}"
     networks:
@@ -99,5 +99,5 @@ services:
       - NCCL_SOCKET_IFNAME=eth0
     volumes:
       - .:/work
-      - /mnt/data1:/data
+      - /mnt/data1/cli/2026.UranusGCM:/data
     working_dir: /work
