@@ -3,11 +3,6 @@ import yaml
 import argparse
 import os
 from snapy import MeshBlockOptions, MeshBlock, kICY, kIV1
-from kintera import ThermoX, KineticsOptions, Kinetics
-from paddle import (
-    setup_profile,
-    evolve_kinetics,
-)
 
 def call_user_output(bvars: dict[str, torch.Tensor]):
     hydro_w = bvars["hydro_w"]
@@ -40,12 +35,13 @@ def run_hydro_with(config_file:str, input_dir:str, output_dir:str,
 
     # get handles to modules
     coord = block.module("coord")
-    thermo_y = block.module("hydro.eos.thermo")
     eos = block.module("hydro.eos")
-    # thermo_y.options.max_iter(100)
+    grav = -block.options.hydro().grav().grav1()
 
-    thermo_x = ThermoX(thermo_y.options)
-    thermo_x.to(device)
+    # thermodynamics
+    Rd = kintera.constants.Rgas / eos.options.weight()
+    cv = eos.species_cv_ref()
+    cp = cv + Rd
 
     block_vars = {}
 
@@ -54,26 +50,18 @@ def run_hydro_with(config_file:str, input_dir:str, output_dir:str,
         for name, data in module.named_buffers():
             block_vars[name] = data.to(device)
     else:
-        param = {}
-        param["Ts"] = float(config["problem"]["Ts"])
-        param["Ps"] = float(config["problem"]["Ps"])
-        param["grav"] = -float(config["forcing"]["const-gravity"]["grav1"])
+        Ts = float(config["problem"]["Ts"])
+        Ps = float(config["problem"]["Ps"])
         param["Tmin"] = float(config["problem"]["Tmin"])
-        for name in thermo_y.options.species():
-            param[f"x{name}"] = float(config["problem"].get(f"x{name}", 0.0))
 
         block_vars["hydro_w"] = setup_profile(block, param, method="pseudo-adiabat")
+        temp = Ts - grav * x1v / cp
 
         # add random vertical velocity
         block_vars["hydro_w"][kIV1] += 0.1 * torch.rand_like(block_vars["hydro_w"][kIV1])
         block_vars, current_time = block.initialize(block_vars)
 
     block.set_user_output_func(call_user_output)
-
-    # kinetics model
-    op_kinet = KineticsOptions.from_yaml(config_file)
-    kinet = Kinetics(op_kinet)
-    kinet.to(device)
 
     # integration
     block.make_outputs(block_vars, current_time)
@@ -91,16 +79,10 @@ def run_hydro_with(config_file:str, input_dir:str, output_dir:str,
         if err < 0:
             break  # terminate
 
-        del_rho = evolve_kinetics(
-            block_vars["hydro_w"], eos, thermo_x, thermo_y, kinet, dt
-        )
-        block_vars["hydro_u"][kICY:] += del_rho
-
         current_time += dt
         block.make_outputs(block_vars, current_time)
 
     block.finalize(block_vars, current_time)
-
 
 def main():
     # parse arguments
