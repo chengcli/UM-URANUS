@@ -72,8 +72,20 @@ finish: ## Clean up the deployed job
 log: ## Show the job log file
 	docker service logs ${JOB}_captain
 
+log1: ## Show the job log file for crew1
+	docker service logs ${JOB}_crew1
+
+log2: ## Show the job log file for crew2
+	docker service logs ${JOB}_crew2
+
 status: ## Show the job status
 	docker service ps ${JOB}_captain
+
+status1: ## Show the job status for crew1
+	docker service ps ${JOB}_crew1
+
+status2: ## Show the job status for crew2
+	docker service ps ${JOB}_crew1
 
 mint: ## Mint the current environment
 	# Remove any git credential files from the dev container before snapshotting
