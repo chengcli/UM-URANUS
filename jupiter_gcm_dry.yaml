@@ -26,7 +26,7 @@ dynamics:
   equation-of-state:
     type: ideal-gas
     gammad: 1.4
-    weight: 29.e-3
+    weight: 2.2e-3
     density-floor:  1.e-10
     pressure-floor: 1.e-10
     limiter: false
@@ -55,7 +55,7 @@ integration:
   type: rk3
   cfl: 0.45
   implicit-scheme: 9
-  nlim: 1
+  nlim: -1
   tlim: 100.e5
   ncycle_out: 1
 

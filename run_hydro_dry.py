@@ -66,9 +66,8 @@ def run_hydro_with(config_file:str, input_dir:str, output_dir:str,
 
         # set up an isothermal atmosphere
         w = torch.zeros((eos.nvar(), nc3, nc2, nc1), device=device)
-        temp = Ts
-        w[kIPR] = Ps * torch.exp(- grav * (x3v - z_surf) / (Rd * Ts))
-        w[kIDN] = w[kIPR] / (Rd * temp)
+        w[kIPR] = Ps * torch.exp(- grav * (x1v - z_surf) / (Rd * Ts))
+        w[kIDN] = w[kIPR] / (Rd * Ts)
 
         # add random vertical velocity
         w[kIV1] += 0.1 * torch.rand_like(w[kIV1])
@@ -106,11 +105,11 @@ def main():
     )
     parser.add_argument(
         "-i", "--input_dir", type=str,
-        default='./input', help="input directory."
+        default='.', help="input directory."
     )
     parser.add_argument(
         "-o", "--output_dir", type=str,
-        default='./output', help="output directory."
+        default='.', help="output directory."
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true",
