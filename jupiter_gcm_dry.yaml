@@ -16,7 +16,7 @@ geometry:
     nghost: 3
 
 distribute:
-  backend: nccl
+  backend: gloo
   layout: cubed-sphere
   nb2: 1
   nb3: 1
@@ -55,7 +55,7 @@ integration:
   type: rk3
   cfl: 0.45
   implicit-scheme: 9
-  nlim: -1
+  nlim: 1
   tlim: 100.e5
   ncycle_out: 1
 
@@ -65,9 +65,6 @@ outputs:
   - type: netcdf
     variables: [prim]
     dt: 1.e4
-  - type: netcdf
-    variables: [thermo]
-    dt: 1.e4
 
 forcing:
   const-gravity:
@@ -76,4 +73,3 @@ forcing:
 problem:
   Ps: 100.e5
   Ts: 600.
-  Tmin: 110.

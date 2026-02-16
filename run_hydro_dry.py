@@ -1,20 +1,18 @@
-import torch
+import os
 import yaml
 import argparse
-import os
-from snapy import MeshBlockOptions, MeshBlock, kICY, kIV1
-
-def call_user_output(bvars: dict[str, torch.Tensor]):
-    hydro_w = bvars["hydro_w"]
-    out = {}
-    out["qtol"] = hydro_w[kICY:].sum(dim=0)
-    return out
-
+import torch
+import kintera
+from snapy import (
+        MeshBlockOptions,
+        MeshBlock,
+        load_restart,
+        kIDN, kIPR, kIV1
+        )
 
 def run_hydro_with(config_file:str, input_dir:str, output_dir:str,
                    verbose: bool):
     RESTART_FILE = f"{input_dir}/next.restart"
-    TOPO_FILE = f"{input_dir}/topo.pt"
 
     with open(config_file, "r") as f:
         config = yaml.safe_load(f)
@@ -27,7 +25,6 @@ def run_hydro_with(config_file:str, input_dir:str, output_dir:str,
     # use cuda if available
     if torch.cuda.is_available() and op.layout().backend() == "nccl":
         device = torch.device(block.device())
-        print("device = ", device)
     else:
         device = torch.device("cpu")
 
@@ -43,25 +40,41 @@ def run_hydro_with(config_file:str, input_dir:str, output_dir:str,
     cv = eos.species_cv_ref()
     cp = cv + Rd
 
+    # setup a meshgrid for simulation
+    x3v, x2v, x1v = torch.meshgrid(
+        coord.buffer("x3v"), coord.buffer("x2v"), coord.buffer("x1v"), indexing="ij"
+    )
+
+    # dimensions
+    nc3 = coord.buffer("x3v").shape[0]
+    nc2 = coord.buffer("x2v").shape[0]
+    nc1 = coord.buffer("x1v").shape[0]
+
+    # get surface height
+    z_surf = coord.buffer("x1f")[block.options.coord().nghost()]
+
+    # set hydro dynamic variables
     block_vars = {}
 
     if os.path.exists(RESTART_FILE):
-        module = torch.jit.load(RESTART_FILE)
-        for name, data in module.named_buffers():
+        block_vars = load_restart(RESTART_FILE)
+        for name, data in block_vars.items():
             block_vars[name] = data.to(device)
     else:
         Ts = float(config["problem"]["Ts"])
         Ps = float(config["problem"]["Ps"])
-        param["Tmin"] = float(config["problem"]["Tmin"])
 
-        block_vars["hydro_w"] = setup_profile(block, param, method="pseudo-adiabat")
-        temp = Ts - grav * x1v / cp
+        # set up an isothermal atmosphere
+        w = torch.zeros((eos.nvar(), nc3, nc2, nc1), device=device)
+        temp = Ts
+        w[kIPR] = Ps * torch.exp(- grav * (x3v - z_surf) / (Rd * Ts))
+        w[kIDN] = w[kIPR] / (Rd * temp)
 
         # add random vertical velocity
-        block_vars["hydro_w"][kIV1] += 0.1 * torch.rand_like(block_vars["hydro_w"][kIV1])
-        block_vars, current_time = block.initialize(block_vars)
+        w[kIV1] += 0.1 * torch.rand_like(w[kIV1])
 
-    block.set_user_output_func(call_user_output)
+        block_vars["hydro_w"] = w
+        block_vars, current_time = block.initialize(block_vars)
 
     # integration
     block.make_outputs(block_vars, current_time)
