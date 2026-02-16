@@ -12,3 +12,6 @@
 
 # pt file
 *.pt
+
+# part file
+*.part

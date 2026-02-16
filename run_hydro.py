@@ -26,6 +26,7 @@ def run_hydro_with(config_file:str, input_dir:str, output_dir:str,
 
     # set hydrodynamic options
     op = MeshBlockOptions.from_yaml(config_file, verbose)
+    op.output_dir(output_dir)
     block = MeshBlock(op)
 
     # use cuda if available
