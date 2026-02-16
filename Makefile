@@ -6,7 +6,7 @@ GITCREDENTIALS := $${HOME}/.git-credentials
 DATE_STRING := $(shell date "+%Y-%m-%d")
 JOB := canoe$(date +%Y%m%d_%H%M%S)
 
-.PHONY: help env up down ps start build deploy finish log status mint upload node resource
+.PHONY: help env up down ps start build deploy finish log log1 log2 status status1 status2 mint upload node resource
 
 # Show help for each target
 help: ## Show this help message
@@ -79,13 +79,13 @@ log2: ## Show the job log file for crew2
 	docker service logs ${JOB}_crew2
 
 status: ## Show the job status
-	docker service ps ${JOB}_captain
+	docker service ps ${JOB}_captain --no-trunc
 
 status1: ## Show the job status for crew1
-	docker service ps ${JOB}_crew1
+	docker service ps ${JOB}_crew1 --no-trunc
 
 status2: ## Show the job status for crew2
-	docker service ps ${JOB}_crew1
+	docker service ps ${JOB}_crew1 --no-trunc
 
 mint: ## Mint the current environment
 	# Remove any git credential files from the dev container before snapshotting
