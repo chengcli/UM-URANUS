@@ -3,3 +3,15 @@
 
 # nc files
 *.nc
+
+# log
+*.log
+
+# env
+.env
+
+# pt file
+*.pt
+
+# part file
+*.part

@@ -11,21 +11,21 @@ geometry:
   type: gnomonic-equiangle
 
   bounds:
-    x1min: 2.4973e7
-    x1max: 2.5023e7
+    x1min: 69911000
+    x1max: 70211000
     x2min_pi: -0.25
     x2max_pi: 0.25
     x3min_pi: -0.25
     x3max_pi: 0.25
 
   cells:
-    nx1: 22
+    nx1: 100
     nx2: 48
     nx3: 48
     nghost: 3
 
 distribute:
-  backend: nccl
+  backend: gloo
   layout: cubed-sphere
   nb2: 1
   nb3: 1
@@ -84,6 +84,6 @@ forcing:
     grav1: -22.
 
 problem:
-  Ps: 8.5e5
-  Ts: 150.
-  Tmin: 50.
+  Ps: 100.e5
+  Ts: 600.
+  Tmin: 110.
