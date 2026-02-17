@@ -30,6 +30,9 @@ coord = block.module("coord")
 r = get_rank()
 layout = get_layout()
 rx, ry, face_id = layout.loc_of(r)
+print("rx = ", rx)
+print("ry = ", ry)
+print("face_id = ", face_id)
 face = get_cs_face_name(face_id)
 
 beta, alpha, r_planet = torch.meshgrid(
