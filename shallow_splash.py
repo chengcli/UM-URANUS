@@ -11,7 +11,7 @@ dphi = 10.0
 radius = 5.0e5
 
 # set hydrodynamic options
-op = MeshBlockOptions.from_yaml("shallow_splash.yaml", verbose=False)
+op = MeshBlockOptions.from_yaml("shallow_splash.yaml", verbose=True)
 op.output_dir("/data")
 block = MeshBlock(op)
 
