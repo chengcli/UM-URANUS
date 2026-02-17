@@ -16,7 +16,7 @@ geometry:
     nghost: 3
 
 distribute:
-  backend: gloo
+  backend: nccl
   layout: cubed-sphere
   nb2: 1
   nb3: 1
@@ -54,7 +54,7 @@ boundary-condition:
 integration:
   type: rk3
   cfl: 0.45
-  implicit-scheme: 9
+  implicit-scheme: 0
   nlim: -1
   tlim: 100.e5
   ncycle_out: 1
