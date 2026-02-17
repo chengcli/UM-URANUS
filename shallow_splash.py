@@ -28,20 +28,14 @@ coord = block.module("coord")
 
 # set coordinates
 r = get_rank()
-print("r = ", r)
 
 layout = get_layout()
 rx, ry, face_id = layout.loc_of(r)
-print("rx = ", rx)
-print("ry = ", ry)
-print("face_id = ", face_id)
 face = get_cs_face_name(face_id)
 
 beta, alpha, r_planet = torch.meshgrid(
     coord.buffer("x3v"), coord.buffer("x2v"), coord.buffer("x1v"), indexing="ij"
 )
-print("alpha = ", alpha)
-print("beta = ", beta)
 lon, lat = cs_ab_to_lonlat(face, alpha, beta)
 
 # dimensions
