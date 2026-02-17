@@ -69,4 +69,4 @@ torchrun \
   --master_addr="${MASTER_ADDR}" \
   --master_port="${MASTER_PORT}" \
   ./run_hydro_dry.py --config=jupiter_gcm_dry.yaml \
-                     --output_dir=/data/ > /data/a.log 2>&1
+                     --output_dir=/data/ > /data/node${NODE_RANK}.log 2>&1
