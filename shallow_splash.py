@@ -10,18 +10,17 @@ phi = 500.0
 dphi = 10.0
 radius = 5.0e5
 
-# use cuda if available
-if torch.cuda.is_available():
-    device = torch.device("cuda:0")
-else:
-    device = torch.device("cpu")
-
 # set hydrodynamic options
 op = MeshBlockOptions.from_yaml("shallow_splash.yaml", verbose=False)
 op.output_dir("/data")
-
-# initialize block
 block = MeshBlock(op)
+
+# use cuda if available
+if torch.cuda.is_available() and op.layout().backend() == "nccl":
+    device = torch.device(block.device())
+else:
+    device = torch.device("cpu")
+
 block.to(device)
 
 # get handles to modules
@@ -36,6 +35,8 @@ face = get_cs_face_name(face_id)
 beta, alpha, r_planet = torch.meshgrid(
     coord.buffer("x3v"), coord.buffer("x2v"), coord.buffer("x1v"), indexing="ij"
 )
+print("alpha = ", alpha)
+print("beta = ", beta)
 lon, lat = cs_ab_to_lonlat(face, alpha, beta)
 
 # dimensions
