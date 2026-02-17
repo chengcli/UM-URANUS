@@ -62,12 +62,11 @@ PROC_PER_NODE="${3:?PROC_PER_NODE required}"
 NODES="${4:?NODES required}"
 
 # --------- Run ----------
+  #./run_hydro_dry.py --config=jupiter_gcm_dry.yaml \
 torchrun \
   --nnodes="${NODES}" \
   --nproc_per_node="${PROC_PER_NODE}" \
   --node_rank="${NODE_RANK}" \
   --master_addr="${MASTER_ADDR}" \
   --master_port="${MASTER_PORT}" \
-  #./run_hydro_dry.py --config=jupiter_gcm_dry.yaml \
-  ./shallow_splash.py \ # --config=jupiter_gcm_dry.yaml \
-                      --output_dir=/data/ > /data/node${NODE_RANK}.log 2>&1
+  ./shallow_splash.py --output_dir=/data/ > /data/node${NODE_RANK}.log 2>&1
