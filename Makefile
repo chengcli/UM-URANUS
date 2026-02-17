@@ -36,7 +36,7 @@ env: ## Generate the .env file with git configs first, then user info
 		echo "USER=$$(id -un)"    >> $(ENV_FILE); \
 		echo "USER_UID=$$(id -u)" >> $(ENV_FILE); \
 		echo "USER_GID=$$(id -g)" >> $(ENV_FILE); \
-		echo "REGISTRY=$$(HOSTNAME):5000" >> $(ENV_FILE); \
+		echo "REGISTRY=${HOST}:5000" >> $(ENV_FILE); \
 		echo "Created $(ENV_FILE):"; cat $(ENV_FILE); \
 	fi
 
@@ -65,7 +65,9 @@ build: env ## Build (or rebuild) the 'dev' container and start it
 	@docker compose up -d --build dev
 
 deploy: env ## Deploy a multi-node job to cluster
-	@USER_UID="$$(id -u)" USER_GID="$$(id -g)" docker stack deploy -c deploy.yaml ${JOB}
+	@docker tag canoe:latest ${HOST}:5000/canoe:tmp
+	@docker push ${HOST}:5000/canoe:tmp
+	@USER_UID="$$(id -u)" USER_GID="$$(id -g)" REGISTRY="${HOST}:5000" docker stack deploy -c deploy.yaml ${JOB}
 	@echo -e "\033[32m[OK]\033[0m ${JOB} deployed"
 
 finish: ## Clean up the deployed job
@@ -92,7 +94,6 @@ status2: ## Show the job status for crew2
 mint: ## Mint the current environment to docker hub
 	docker exec canoe-dev-1 bash -lc 'rm -f /etc/git-credentials /root/.git-credentials /home/*/.git-credentials 2>/dev/null || true'
 	docker tag canoe:latest docker.io/luminoctum/ubuntu22.04-cuda12.9-py3.10-canoe:${DATE_STRING}
-	docker tag canoe:latest ${HOST}:5000/canoe:tmp
 
 save: ## Save a temporary version
 	docker save canoe:latest | gzip > ${HOME}/data/canoe_tmp.tar.gz
