@@ -1,25 +1,18 @@
-import torch
+import os
 import yaml
 import argparse
-import os
-from snapy import MeshBlockOptions, MeshBlock, kICY, kIV1
-from kintera import ThermoX, KineticsOptions, Kinetics
-from paddle import (
-    setup_profile,
-    evolve_kinetics,
-)
-
-def call_user_output(bvars: dict[str, torch.Tensor]):
-    hydro_w = bvars["hydro_w"]
-    out = {}
-    out["qtol"] = hydro_w[kICY:].sum(dim=0)
-    return out
-
+import torch
+import kintera
+from snapy import (
+        MeshBlockOptions,
+        MeshBlock,
+        load_restart,
+        kIDN, kIPR, kIV1
+        )
 
 def run_hydro_with(config_file:str, input_dir:str, output_dir:str,
                    verbose: bool):
     RESTART_FILE = f"{input_dir}/next.restart"
-    TOPO_FILE = f"{input_dir}/topo.pt"
 
     with open(config_file, "r") as f:
         config = yaml.safe_load(f)
@@ -32,7 +25,6 @@ def run_hydro_with(config_file:str, input_dir:str, output_dir:str,
     # use cuda if available
     if torch.cuda.is_available() and op.layout().backend() == "nccl":
         device = torch.device(block.device())
-        print("device = ", device)
     else:
         device = torch.device("cpu")
 
@@ -40,40 +32,48 @@ def run_hydro_with(config_file:str, input_dir:str, output_dir:str,
 
     # get handles to modules
     coord = block.module("coord")
-    thermo_y = block.module("hydro.eos.thermo")
     eos = block.module("hydro.eos")
-    # thermo_y.options.max_iter(100)
+    grav = -block.options.hydro().grav().grav1()
 
-    thermo_x = ThermoX(thermo_y.options)
-    thermo_x.to(device)
+    # thermodynamics
+    Rd = kintera.constants.Rgas / eos.options.weight()
+    cv = eos.species_cv_ref()
+    cp = cv + Rd
 
+    # setup a meshgrid for simulation
+    x3v, x2v, x1v = torch.meshgrid(
+        coord.buffer("x3v"), coord.buffer("x2v"), coord.buffer("x1v"), indexing="ij"
+    )
+
+    # dimensions
+    nc3 = coord.buffer("x3v").shape[0]
+    nc2 = coord.buffer("x2v").shape[0]
+    nc1 = coord.buffer("x1v").shape[0]
+
+    # get surface height
+    z_surf = coord.buffer("x1f")[block.options.coord().nghost()]
+
+    # set hydro dynamic variables
     block_vars = {}
 
     if os.path.exists(RESTART_FILE):
-        module = torch.jit.load(RESTART_FILE)
-        for name, data in module.named_buffers():
+        block_vars = load_restart(RESTART_FILE)
+        for name, data in block_vars.items():
             block_vars[name] = data.to(device)
     else:
-        param = {}
-        param["Ts"] = float(config["problem"]["Ts"])
-        param["Ps"] = float(config["problem"]["Ps"])
-        param["grav"] = -float(config["forcing"]["const-gravity"]["grav1"])
-        param["Tmin"] = float(config["problem"]["Tmin"])
-        for name in thermo_y.options.species():
-            param[f"x{name}"] = float(config["problem"].get(f"x{name}", 0.0))
+        Ts = float(config["problem"]["Ts"])
+        Ps = float(config["problem"]["Ps"])
 
-        block_vars["hydro_w"] = setup_profile(block, param, method="pseudo-adiabat")
+        # set up an isothermal atmosphere
+        w = torch.zeros((eos.nvar(), nc3, nc2, nc1), device=device)
+        w[kIPR] = Ps * torch.exp(- grav * (x1v - z_surf) / (Rd * Ts))
+        w[kIDN] = w[kIPR] / (Rd * Ts)
 
         # add random vertical velocity
-        block_vars["hydro_w"][kIV1] += 0.1 * torch.rand_like(block_vars["hydro_w"][kIV1])
+        w[kIV1] += 0.1 * torch.rand_like(w[kIV1])
+
+        block_vars["hydro_w"] = w
         block_vars, current_time = block.initialize(block_vars)
-
-    block.set_user_output_func(call_user_output)
-
-    # kinetics model
-    op_kinet = KineticsOptions.from_yaml(config_file)
-    kinet = Kinetics(op_kinet)
-    kinet.to(device)
 
     # integration
     block.make_outputs(block_vars, current_time)
@@ -91,16 +91,10 @@ def run_hydro_with(config_file:str, input_dir:str, output_dir:str,
         if err < 0:
             break  # terminate
 
-        del_rho = evolve_kinetics(
-            block_vars["hydro_w"], eos, thermo_x, thermo_y, kinet, dt
-        )
-        block_vars["hydro_u"][kICY:] += del_rho
-
         current_time += dt
         block.make_outputs(block_vars, current_time)
 
     block.finalize(block_vars, current_time)
-
 
 def main():
     # parse arguments
@@ -111,11 +105,11 @@ def main():
     )
     parser.add_argument(
         "-i", "--input_dir", type=str,
-        default='./input', help="input directory."
+        default='.', help="input directory."
     )
     parser.add_argument(
         "-o", "--output_dir", type=str,
-        default='./output', help="output directory."
+        default='.', help="output directory."
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true",

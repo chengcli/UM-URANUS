@@ -2,21 +2,21 @@ geometry:
   type: gnomonic-equiangle
 
   bounds:
-    x1min: 69911000
-    x1max: 70211000
+    x1min: 6371000
+    x1max: 6371001
     x2min_pi: -0.25
     x2max_pi: 0.25
     x3min_pi: -0.25
     x3max_pi: 0.25
 
   cells:
-    nx1: 100
+    nx1: 1
     nx2: 48
     nx3: 48
     nghost: 3
 
 distribute:
-  backend: nccl
+  backend: gloo
   layout: cubed-sphere
   nb2: 1
   nb3: 1
@@ -24,23 +24,15 @@ distribute:
 
 dynamics:
   equation-of-state:
-    type: ideal-gas
-    gammad: 1.4
-    weight: 2.2e-3
-    density-floor:  1.e-10
-    pressure-floor: 1.e-10
-    limiter: false
-
-  vertical-projection:
-    type: temperature
-    pressure-margin: 1.e-6
+    type: shallow-water
 
   reconstruct:
-    vertical: {type: weno5, scale: true, shock: true}
-    horizontal: {type: weno5, scale: true, shock: true}
+    vertical: {type: weno5, scale: false, shock: false}
+    horizontal: {type: weno5, scale: false, shock: false}
 
   riemann-solver:
-    type: hllc
+    type: shallow-roe
+    dir: yz
 
 boundary-condition:
   external:
@@ -53,23 +45,17 @@ boundary-condition:
 
 integration:
   type: rk3
-  cfl: 0.45
-  implicit-scheme: 0
+  cfl: 0.9
   nlim: -1
-  tlim: 100.e5
-  ncycle_out: 1
+  tlim: 8.64E5
+  ncycle_out: 10
 
 outputs:
-  - type: restart
-    dt: 10.E5
   - type: netcdf
     variables: [prim]
-    dt: 1.e4
-
-forcing:
-  const-gravity:
-    grav1: -22.
+    dt: 1.E4
 
 problem:
-  Ps: 100.e5
-  Ts: 600.
+  phi: 500.
+  dphi: 10.
+  radius: 5.E5
