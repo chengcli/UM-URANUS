@@ -48,7 +48,7 @@ integration:
   cfl: 0.9
   nlim: -1
   tlim: 8.64E5
-  ncycle_out: 10
+  ncycle_out: 1
 
 outputs:
   - type: netcdf
