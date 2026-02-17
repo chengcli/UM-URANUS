@@ -53,7 +53,7 @@ integration:
 outputs:
   - type: netcdf
     variables: [prim]
-    dt: 1.E4
+    dt: 1.E1
 
 problem:
   phi: 500.
