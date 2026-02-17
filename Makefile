@@ -5,6 +5,7 @@ GITCONFIG := $${HOME}/.gitconfig
 GITCREDENTIALS := $${HOME}/.git-credentials
 DATE_STRING := $(shell date "+%Y-%m-%d")
 JOB := canoe$(date +%Y%m%d_%H%M%S)
+HOST := $${HOSTNAME}
 
 .PHONY: help env up down ps start build deploy finish log log1 log2 status status1 status2 mint upload node resource
 
@@ -35,6 +36,7 @@ env: ## Generate the .env file with git configs first, then user info
 		echo "USER=$$(id -un)"    >> $(ENV_FILE); \
 		echo "USER_UID=$$(id -u)" >> $(ENV_FILE); \
 		echo "USER_GID=$$(id -g)" >> $(ENV_FILE); \
+		echo "REGISTRY=$$(HOSTNAME):5000" >> $(ENV_FILE); \
 		echo "Created $(ENV_FILE):"; cat $(ENV_FILE); \
 	fi
 
@@ -85,12 +87,18 @@ status1: ## Show the job status for crew1
 	docker service ps ${JOB}_crew1 --no-trunc
 
 status2: ## Show the job status for crew2
-	docker service ps ${JOB}_crew1 --no-trunc
+	docker service ps ${JOB}_crew2 --no-trunc
 
-mint: ## Mint the current environment
-	# Remove any git credential files from the dev container before snapshotting
+mint: ## Mint the current environment to docker hub
 	docker exec canoe-dev-1 bash -lc 'rm -f /etc/git-credentials /root/.git-credentials /home/*/.git-credentials 2>/dev/null || true'
 	docker tag canoe:latest docker.io/luminoctum/ubuntu22.04-cuda12.9-py3.10-canoe:${DATE_STRING}
+	docker tag canoe:latest ${HOST}:5000/canoe:tmp
+
+save: ## Save a temporary version
+	docker save canoe:latest | gzip > ${HOME}/data/canoe_tmp.tar.gz
+
+load: ## Load a temporary version
+	gunzip -c ${HOME}/data/canoe_tmp.tar.gz | docker load
 
 upload: ## Upload the minted image to docker hub
 	# Refuse to push if the image still contains git credential files
