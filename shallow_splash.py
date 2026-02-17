@@ -28,6 +28,8 @@ coord = block.module("coord")
 
 # set coordinates
 r = get_rank()
+print("r = ", r)
+
 layout = get_layout()
 rx, ry, face_id = layout.loc_of(r)
 print("rx = ", rx)
