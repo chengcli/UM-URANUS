@@ -69,4 +69,4 @@ torchrun \
   --node_rank="${NODE_RANK}" \
   --master_addr="${MASTER_ADDR}" \
   --master_port="${MASTER_PORT}" \
-  ./shallow_splash.py --output_dir=/data/ > /data/node${NODE_RANK}.log 2>&1
+  ./straka.py --output_dir=/data/ > /data/node${NODE_RANK}.log 2>&1
