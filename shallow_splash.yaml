@@ -51,9 +51,11 @@ integration:
   ncycle_out: 10
 
 outputs:
+  - type: restart
+    dt: 1.E4
   - type: netcdf
     variables: [prim]
-    dt: 1.E1
+    dt: 1.E4
 
 problem:
   phi: 500.
