@@ -5,47 +5,6 @@ set -x
 echo "Working Directory = $(pwd)"
 echo "ID=$(id)"
 
-# --------- Repo sync (manager node) ----------
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-cd "${SCRIPT_DIR}"
-
-if [[ -d .git ]]; then
-  branch="$(git symbolic-ref --quiet --short HEAD || true)"
-  if [[ -z "${branch}" ]]; then
-    echo "ERROR: Detached HEAD. Checkout a branch before deploying." >&2
-    exit 1
-  fi
-
-  # Abort if working tree is not clean
-  if [[ -n "$(git status --porcelain)" ]]; then
-    echo "ERROR: Working tree not clean. Aborting."
-    git status -sb
-    exit 1
-  fi
-
-  echo "Repo:   ${SCRIPT_DIR}"
-  echo "Branch: ${branch}"
-  echo "Before: $(git rev-parse --short HEAD)  $(git log -1 --pretty=%s)"
-
-  git fetch --prune origin
-
-  if ! git show-ref --verify --quiet "refs/remotes/origin/${branch}"; then
-    echo "ERROR: Remote branch origin/${branch} not found." >&2
-    exit 1
-  fi
-
-  # Hard sync to remote
-  git reset --hard "origin/${branch}"
-
-  if [[ -f .gitmodules ]]; then
-    git submodule update --init --recursive
-  fi
-
-  echo "After:  $(git rev-parse --short HEAD)  $(git log -1 --pretty=%s)"
-else
-  echo "WARNING: Not a git repo. Skipping sync."
-fi
-
 # --------- Environment ----------
 if [[ -f /opt/venv/bin/activate ]]; then
   source /opt/venv/bin/activate
