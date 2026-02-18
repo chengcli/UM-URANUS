@@ -48,9 +48,11 @@ integration:
   cfl: 0.9
   nlim: -1
   tlim: 8.64E5
-  ncycle_out: 1
+  ncycle_out: 10
 
 outputs:
+  - type: restart
+    dt: 1.E4
   - type: netcdf
     variables: [prim]
     dt: 1.E4

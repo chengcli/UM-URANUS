@@ -11,7 +11,7 @@ dphi = 10.0
 radius = 5.0e5
 
 # set hydrodynamic options
-op = MeshBlockOptions.from_yaml("shallow_splash.yaml", verbose=True)
+op = MeshBlockOptions.from_yaml("shallow_splash.yaml", verbose=False)
 op.output_dir("/data")
 block = MeshBlock(op)
 
@@ -67,8 +67,6 @@ while not block.intg.stop(block.inc_cycle(), current_time):
 
     for stage in range(len(block.intg.stages)):
         block.forward(block_vars, dt, stage)
-        print('w min = ', block_vars["hydro_w"].min(), ' max = ', block_vars["hydro_w"].max())
-        print('u min = ', block_vars["hydro_u"].min(), ' max = ', block_vars["hydro_u"].max())
 
     err = block.check_redo(block_vars)
     if err > 0:
