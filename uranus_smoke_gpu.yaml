@@ -8,9 +8,9 @@ geometry:
     x3min_pi: -0.25
     x3max_pi: 0.25
   cells:
-    nx1: 12
-    nx2: 8
-    nx3: 8
+    nx1: 10
+    nx2: 10
+    nx3: 10
     nghost: 3
 
 distribute:
@@ -54,16 +54,16 @@ integration:
   type: rk3
   cfl: 0.8
   implicit-scheme: 9
-  nlim: 2
-  tlim: 1000.0
+  nlim: 99999
+  tlim: 1.0e9
   ncycle_out: 1
 
 outputs:
   - type: restart
-    dt: 0.0
+    dt: 1e6
   - type: netcdf
     variables: [prim]
-    dt: 0.0
+    dt: 1e6
 
 forcing:
   const-gravity:

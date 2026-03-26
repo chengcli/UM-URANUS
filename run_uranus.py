@@ -440,6 +440,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    print(args)
     config = load_config(args.config)
 
     mesh, eos, device = create_models(args.config, args.output_dir)
