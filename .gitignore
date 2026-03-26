@@ -15,3 +15,6 @@
 
 # part file
 *.part
+
+# cache
+__pycache__
