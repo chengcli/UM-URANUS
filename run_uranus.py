@@ -9,7 +9,7 @@ import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
-
+# import numpy
 import torch
 import yaml
 import snapy
@@ -284,9 +284,15 @@ def apply_tidal_forcing(
     block_vars: dict[str, torch.Tensor],
     dt: float,
     heating_tendency: torch.Tensor,
+    current_time: float,
 ) -> None:
     hydro_u = block_vars["hydro_u"]
-    hydro_u[kIPR] += heating_tendency * dt
+    tau = 2e5
+    if current_time < 100*tau:
+        hydro_u[kIPR] += (1+1e6*math.exp(-current_time/1e5))*heating_tendency * dt
+    else:
+        hydro_u[kIPR] += heating_tendency * dt
+
     block.apply_hydro_bc(hydro_u, type=kConserved)
 
 
@@ -398,7 +404,7 @@ def run_simulation(
             mesh.forward(mesh_vars, dt, stage)
             for block, block_vars, heating_tendency in zip(mesh.blocks, mesh_vars, heating_tendencies):
                 if heating_tendency is not None:
-                    apply_tidal_forcing(block, block_vars, dt, heating_tendency)
+                    apply_tidal_forcing(block, block_vars, dt, heating_tendency,current_time)
 
         err = mesh.check_redo(mesh_vars)
         if err > 0:
