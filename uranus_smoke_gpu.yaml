@@ -63,7 +63,7 @@ outputs:
     dt: 1e6
   - type: netcdf
     variables: [prim]
-    dt: 1e6
+    dt: 1e5
 
 forcing:
   const-gravity:

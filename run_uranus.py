@@ -207,9 +207,14 @@ def build_isothermal_profile(block: snapy.MeshBlock, eos, config: dict) -> torch
 def initialize_isothermal(mesh: Mesh, eos, config: dict) -> tuple[list[dict[str, torch.Tensor]], float]:
     mesh_vars: list[dict[str, torch.Tensor]] = []
     for block in mesh.blocks:
+
         hydro_w = build_isothermal_profile(block, eos, config)
+        a,b,c,d = hydro_w.shape
+        newhydro =torch.zeros(a+1,b,c,d)
+        print(a)
         hydro_w[kIV1] += 1e-6 * torch.randn_like(hydro_w[kIV1])
-        mesh_vars.append({"hydro_w": hydro_w})
+        newhydro[:a,b,c,d] = hydro_w
+        mesh_vars.append({"hydro_w": newhydro})
 
     return mesh.initialize(mesh_vars)
 
@@ -288,8 +293,8 @@ def apply_tidal_forcing(
 ) -> None:
     hydro_u = block_vars["hydro_u"]
     tau = 2e5
-    if current_time < 100*tau:
-        hydro_u[kIPR] += (1+1e6*math.exp(-current_time/1e5))*heating_tendency * dt
+    if current_time < 50*tau:
+        hydro_u[kIPR] += (1+1e6*math.exp(-current_time/tau))*heating_tendency * dt
     else:
         hydro_u[kIPR] += heating_tendency * dt
 
@@ -323,7 +328,7 @@ def compute_radiative_heating(
             forcing.umustd,
             forcing.syear,
         ).reshape(batch, 2)
-
+        block_vars["hydro_w"][-1,:,:,0] = global_features[:,1].reshape(nx3, nx2)
         output = forcing.model(regridtemp.to(torch.float32), global_features.to(torch.float32), forcing.mask)
         heating = degrid(forcing.basepress, output, pressbatch, forcing.heatthr, forcing.heatsf).reshape(nx3, nx2, nz)
         return forcing.gas_constant * hydro_w[kIDN] * heating
@@ -399,7 +404,7 @@ def run_simulation(
                 for block_vars, forcing in zip(mesh_vars, forcing_states)
             ]
             next_forcing_time = current_time + 1000.0 * dt
-
+        print(heating_tendencies[0][:,:,10])
         for stage in range(len(intg.stages)):
             mesh.forward(mesh_vars, dt, stage)
             for block, block_vars, heating_tendency in zip(mesh.blocks, mesh_vars, heating_tendencies):
