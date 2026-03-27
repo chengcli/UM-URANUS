@@ -40,6 +40,12 @@ class ForcingState:
     lat: torch.Tensor
 
 
+@dataclass
+class BlockDiagnostics:
+    solar_proxy: torch.Tensor
+    heating_tendency: torch.Tensor
+
+
 def regrid_tensor(x: torch.Tensor, y: torch.Tensor, xq: torch.Tensor, tempmean: float, tempstd: float) -> torch.Tensor:
     """Interpolate model data onto the NN pressure grid and normalize it."""
     batch_size, nz = x.shape
@@ -209,12 +215,8 @@ def initialize_isothermal(mesh: Mesh, eos, config: dict) -> tuple[list[dict[str,
     for block in mesh.blocks:
 
         hydro_w = build_isothermal_profile(block, eos, config)
-        a,b,c,d = hydro_w.shape
-        newhydro =torch.zeros(a+1,b,c,d)
-        print(a)
         hydro_w[kIV1] += 1e-6 * torch.randn_like(hydro_w[kIV1])
-        newhydro[:a,b,c,d] = hydro_w
-        mesh_vars.append({"hydro_w": newhydro})
+        mesh_vars.append({"hydro_w": hydro_w})
 
     return mesh.initialize(mesh_vars)
 
@@ -284,6 +286,30 @@ def build_tidal_forcing_state(block: snapy.MeshBlock, config: dict, device: torc
     )
 
 
+def initialize_block_diagnostics(block: snapy.MeshBlock) -> BlockDiagnostics:
+    coord = block.module("coord")
+    x1v = coord.buffer("x1v")
+    x2v = coord.buffer("x2v")
+    x3v = coord.buffer("x3v")
+    shape = (x3v.shape[0], x2v.shape[0], x1v.shape[0])
+    zeros = torch.zeros(shape, dtype=x1v.dtype, device=x1v.device)
+    return BlockDiagnostics(
+        solar_proxy=zeros.clone(),
+        heating_tendency=zeros.clone(),
+    )
+
+
+def register_user_output(block: snapy.MeshBlock, diagnostics: BlockDiagnostics) -> None:
+    def user_output(_vars: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        return {
+            "solar_proxy": diagnostics.solar_proxy.contiguous(),
+            "heating_tendency": diagnostics.heating_tendency.contiguous(),
+        }
+
+    set_output = getattr(block, "set_user_output_func")
+    set_output(user_output)
+
+
 def apply_tidal_forcing(
     block: snapy.MeshBlock,
     block_vars: dict[str, torch.Tensor],
@@ -306,7 +332,7 @@ def compute_radiative_heating(
     forcing: ForcingState,
     eos,
     current_time: float,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     with torch.inference_mode():
         hydro_u = block_vars["hydro_u"]
         hydro_w = eos.compute("U->W", [hydro_u])
@@ -328,10 +354,11 @@ def compute_radiative_heating(
             forcing.umustd,
             forcing.syear,
         ).reshape(batch, 2)
-        block_vars["hydro_w"][-1,:,:,0] = global_features[:,1].reshape(nx3, nx2)
+        solar_proxy = global_features[:, 1].reshape(nx3, nx2, 1).expand(nx3, nx2, nz)
         output = forcing.model(regridtemp.to(torch.float32), global_features.to(torch.float32), forcing.mask)
         heating = degrid(forcing.basepress, output, pressbatch, forcing.heatthr, forcing.heatsf).reshape(nx3, nx2, nz)
-        return forcing.gas_constant * hydro_w[kIDN] * heating
+        heating_tendency = forcing.gas_constant * hydro_w[kIDN] * heating
+        return heating_tendency, solar_proxy
 
 
 def write_restart_manifest(
@@ -375,6 +402,7 @@ def run_simulation(
     current_time: float,
     tlim: float,
     forcing_states: list[ForcingState],
+    block_diagnostics: list[BlockDiagnostics],
     config_file: str,
     output_dir: str,
     basename: str,
@@ -399,10 +427,12 @@ def run_simulation(
         mesh.print_cycle_info(mesh_vars, current_time, dt)
 
         if current_time >= next_forcing_time:
-            heating_tendencies = [
-                compute_radiative_heating(block_vars, forcing, eos, current_time)
-                for block_vars, forcing in zip(mesh_vars, forcing_states)
-            ]
+            heating_tendencies = []
+            for block_vars, forcing, diagnostics in zip(mesh_vars, forcing_states, block_diagnostics):
+                heating_tendency, solar_proxy = compute_radiative_heating(block_vars, forcing, eos, current_time)
+                diagnostics.heating_tendency = heating_tendency.contiguous()
+                diagnostics.solar_proxy = solar_proxy.contiguous()
+                heating_tendencies.append(heating_tendency)
             next_forcing_time = current_time + 1000.0 * dt
         print(heating_tendencies[0][:,:,10])
         for stage in range(len(intg.stages)):
@@ -467,6 +497,9 @@ def main() -> None:
                 print(f"block[{i}] {key}: shape={tuple(data.shape)} dtype={data.dtype} device={data.device}")
 
     forcing_states = [build_tidal_forcing_state(block, config, device, eos) for block in mesh.blocks]
+    block_diagnostics = [initialize_block_diagnostics(block) for block in mesh.blocks]
+    for block, diagnostics in zip(mesh.blocks, block_diagnostics):
+        register_user_output(block, diagnostics)
 
     tlim = float(config["integration"]["tlim"])
     basename = Path(args.config).stem
@@ -477,6 +510,7 @@ def main() -> None:
         current_time=current_time,
         tlim=tlim,
         forcing_states=forcing_states,
+        block_diagnostics=block_diagnostics,
         config_file=args.config,
         output_dir=args.output_dir,
         basename=basename,
