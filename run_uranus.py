@@ -37,12 +37,19 @@ class ForcingState:
     gas_constant: float
     mask: torch.Tensor
     basepress: torch.Tensor
+    lon: torch.Tensor
     lat: torch.Tensor
+    stellar_flux_nadir: float
+    substellar_lon: float
+    substellar_lat: float
+    rotation_rate: float
+    rt_update_cadence: float
 
 
 @dataclass
 class BlockDiagnostics:
-    solar_proxy: torch.Tensor
+    solar_zenith_angle: torch.Tensor
+    solar_forcing: torch.Tensor
     heating_tendency: torch.Tensor
 
 
@@ -124,6 +131,7 @@ def normalize_standard(x: torch.Tensor, mean: float, std: float) -> torch.Tensor
 
 
 def calcglobal(
+    lon: torch.Tensor,
     lat: torch.Tensor,
     current_time: float,
     fluxmean: float,
@@ -131,25 +139,43 @@ def calcglobal(
     umumean: float,
     umustd: float,
     syear: float,
-) -> torch.Tensor:
+    stellar_flux_nadir: float,
+    substellar_lon: float,
+    substellar_lat: float,
+    rotation_rate: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     pi = torch.pi
     ls = (current_time % (2 * syear)) * 2 * pi / syear
     obliquity = torch.tensor(97.77 * pi / 180.0, dtype=lat.dtype, device=lat.device)
+    seasonal_declination = torch.asin(torch.sin(obliquity) * torch.sin(torch.tensor(ls, dtype=lat.dtype, device=lat.device)))
+    subsolar_lat = torch.clamp(
+        torch.tensor(substellar_lat, dtype=lat.dtype, device=lat.device) + seasonal_declination,
+        -0.5 * pi,
+        0.5 * pi,
+    )
+    rotating_subsolar_lon = substellar_lon - rotation_rate * current_time
+    subsolar_lon = torch.remainder(
+        torch.tensor(rotating_subsolar_lon, dtype=lon.dtype, device=lon.device),
+        2.0 * pi,
+    )
+    hour_angle = torch.atan2(torch.sin(lon - subsolar_lon), torch.cos(lon - subsolar_lon))
 
-    sindelta = torch.sin(obliquity) * torch.sin(torch.tensor(ls, dtype=lat.dtype, device=lat.device))
-    cosdelta = torch.sqrt(1 - sindelta**2)
-
+    sin_subsolar_lat = torch.sin(subsolar_lat)
+    cos_subsolar_lat = torch.cos(subsolar_lat)
     sinlat = torch.sin(lat)
     coslat = torch.cos(lat)
-    arg = -sinlat * sindelta / (coslat * cosdelta + 1e-12)
-    arg = torch.clamp(arg, -1.0, 1.0)
+    cos_zenith = sinlat * sin_subsolar_lat + coslat * cos_subsolar_lat * torch.cos(hour_angle)
+    cos_zenith = torch.clamp(cos_zenith, -1.0, 1.0)
+    day_side_cos_zenith = torch.clamp(cos_zenith, min=0.0)
 
-    hsunset = torch.acos(arg)
-    avgcostheta = (sinlat * sindelta * hsunset + coslat * cosdelta * torch.sin(hsunset)) / pi
+    zenith_angle = torch.acos(torch.clamp(day_side_cos_zenith, 0.0, 1.0))
+    night_side_zenith = torch.full_like(zenith_angle, 0.5 * pi)
+    zenith_angle = torch.where(day_side_cos_zenith > 0.0, zenith_angle, night_side_zenith)
 
-    flux = normalize_standard(hsunset / pi, fluxmean, fluxstd)
-    umu = normalize_standard(avgcostheta, umumean, umustd)
-    return torch.stack([flux, umu], dim=-1)
+    solar_forcing = stellar_flux_nadir * day_side_cos_zenith
+    flux = normalize_standard(day_side_cos_zenith, fluxmean, fluxstd)
+    umu = normalize_standard(zenith_angle / (0.5 * pi), umumean, umustd)
+    return torch.stack([flux, umu], dim=-1), zenith_angle * (180.0 / pi), solar_forcing, day_side_cos_zenith
 
 
 def load_config(path: str) -> dict:
@@ -236,9 +262,10 @@ def build_tidal_forcing_state(block: snapy.MeshBlock, config: dict, device: torc
 
     beta, alpha = torch.meshgrid(x3v, x2v, indexing="ij")
     face_name = _resolve_local_face_name(block)
-    _, lat = snapy.coord.cs_ab_to_lonlat(face_name, alpha, beta)
+    lon, lat = snapy.coord.cs_ab_to_lonlat(face_name, alpha, beta)
 
     problem = config["problem"]
+    coriolis = config["forcing"]["coriolis"]
     model = torch.jit.load(problem["modelfile"]).to(device)
     model.eval()
 
@@ -282,7 +309,13 @@ def build_tidal_forcing_state(block: snapy.MeshBlock, config: dict, device: torc
         gas_constant=eos_gas_constant(eos),
         mask=mask,
         basepress=basepress,
+        lon=lon.to(device),
         lat=lat.to(device),
+        stellar_flux_nadir=float(problem["stellar_flux_nadir"]),
+        substellar_lon=float(problem.get("substellar_lon_deg", 0.0) * math.pi / 180.0),
+        substellar_lat=float(problem.get("substellar_lat_deg", 0.0) * math.pi / 180.0),
+        rotation_rate=float(coriolis.get("omega1", 0.0)),
+        rt_update_cadence=float(problem.get("rt_update_cadence", 1.0e4)),
     )
 
 
@@ -294,7 +327,8 @@ def initialize_block_diagnostics(block: snapy.MeshBlock) -> BlockDiagnostics:
     shape = (x3v.shape[0], x2v.shape[0], x1v.shape[0])
     zeros = torch.zeros(shape, dtype=x1v.dtype, device=x1v.device)
     return BlockDiagnostics(
-        solar_proxy=zeros.clone(),
+        solar_zenith_angle=torch.full(shape, 90.0, dtype=x1v.dtype, device=x1v.device),
+        solar_forcing=zeros.clone(),
         heating_tendency=zeros.clone(),
     )
 
@@ -302,7 +336,8 @@ def initialize_block_diagnostics(block: snapy.MeshBlock) -> BlockDiagnostics:
 def register_user_output(block: snapy.MeshBlock, diagnostics: BlockDiagnostics) -> None:
     def user_output(_vars: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         return {
-            "solar_proxy": diagnostics.solar_proxy.contiguous(),
+            "solar_zenith_angle": diagnostics.solar_zenith_angle.contiguous(),
+            "solar_forcing": diagnostics.solar_forcing.contiguous(),
             "heating_tendency": diagnostics.heating_tendency.contiguous(),
         }
 
@@ -332,7 +367,7 @@ def compute_radiative_heating(
     forcing: ForcingState,
     eos,
     current_time: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     with torch.inference_mode():
         hydro_u = block_vars["hydro_u"]
         hydro_w = eos.compute("U->W", [hydro_u])
@@ -345,7 +380,8 @@ def compute_radiative_heating(
         tempbatch = temperature.reshape(batch, nz)
         regridtemp = regrid_tensor(pressbatch, tempbatch, forcing.basepress, forcing.tempmean, forcing.tempstd)
 
-        global_features = calcglobal(
+        global_features, solar_zenith_angle, solar_forcing, _ = calcglobal(
+            forcing.lon,
             forcing.lat,
             current_time,
             forcing.fluxmean,
@@ -353,12 +389,46 @@ def compute_radiative_heating(
             forcing.umumean,
             forcing.umustd,
             forcing.syear,
-        ).reshape(batch, 2)
-        solar_proxy = global_features[:, 1].reshape(nx3, nx2, 1).expand(nx3, nx2, nz)
+            forcing.stellar_flux_nadir,
+            forcing.substellar_lon,
+            forcing.substellar_lat,
+            forcing.rotation_rate,
+        )
+        global_features = global_features.reshape(batch, 2)
+        solar_zenith_angle = solar_zenith_angle.reshape(nx3, nx2, 1).expand(nx3, nx2, nz)
+        solar_forcing = solar_forcing.reshape(nx3, nx2, 1).expand(nx3, nx2, nz)
         output = forcing.model(regridtemp.to(torch.float32), global_features.to(torch.float32), forcing.mask)
         heating = degrid(forcing.basepress, output, pressbatch, forcing.heatthr, forcing.heatsf).reshape(nx3, nx2, nz)
         heating_tendency = forcing.gas_constant * hydro_w[kIDN] * heating
-        return heating_tendency, solar_proxy
+        return heating_tendency, solar_zenith_angle, solar_forcing
+
+
+def compute_solar_diagnostics(
+    block_vars: dict[str, torch.Tensor],
+    forcing: ForcingState,
+    current_time: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    hydro_u = block_vars["hydro_u"]
+    nx3, nx2, nz = hydro_u[kIPR].shape
+
+    _, solar_zenith_angle, solar_forcing, _ = calcglobal(
+        forcing.lon,
+        forcing.lat,
+        current_time,
+        forcing.fluxmean,
+        forcing.fluxstd,
+        forcing.umumean,
+        forcing.umustd,
+        forcing.syear,
+        forcing.stellar_flux_nadir,
+        forcing.substellar_lon,
+        forcing.substellar_lat,
+        forcing.rotation_rate,
+    )
+
+    solar_zenith_angle = solar_zenith_angle.reshape(nx3, nx2, 1).expand(nx3, nx2, nz)
+    solar_forcing = solar_forcing.reshape(nx3, nx2, 1).expand(nx3, nx2, nz)
+    return solar_zenith_angle, solar_forcing
 
 
 def write_restart_manifest(
@@ -416,7 +486,7 @@ def run_simulation(
     mesh.make_outputs(mesh_vars, current_time)
 
     cycle = 0
-    next_forcing_time = current_time
+    next_rt_update_time = current_time
     heating_tendencies: list[torch.Tensor | None] = [None] * len(mesh.blocks)
 
     while not intg.stop(cycle, current_time):
@@ -426,14 +496,24 @@ def run_simulation(
         dt = mesh.max_time_step(mesh_vars)
         mesh.print_cycle_info(mesh_vars, current_time, dt)
 
-        if current_time >= next_forcing_time:
+        for block_vars, forcing, diagnostics in zip(mesh_vars, forcing_states, block_diagnostics):
+            solar_zenith_angle, solar_forcing = compute_solar_diagnostics(block_vars, forcing, current_time)
+            diagnostics.solar_zenith_angle = solar_zenith_angle.contiguous()
+            diagnostics.solar_forcing = solar_forcing.contiguous()
+
+        if current_time >= next_rt_update_time:
             heating_tendencies = []
             for block_vars, forcing, diagnostics in zip(mesh_vars, forcing_states, block_diagnostics):
-                heating_tendency, solar_proxy = compute_radiative_heating(block_vars, forcing, eos, current_time)
+                heating_tendency, solar_zenith_angle, solar_forcing = compute_radiative_heating(block_vars, forcing, eos, current_time)
                 diagnostics.heating_tendency = heating_tendency.contiguous()
-                diagnostics.solar_proxy = solar_proxy.contiguous()
+                diagnostics.solar_zenith_angle = solar_zenith_angle.contiguous()
+                diagnostics.solar_forcing = solar_forcing.contiguous()
                 heating_tendencies.append(heating_tendency)
-            next_forcing_time = current_time + 1000.0 * dt
+            rt_update_cadence = forcing_states[0].rt_update_cadence if forcing_states else 0.0
+            if rt_update_cadence <= 0.0:
+                next_rt_update_time = current_time
+            else:
+                next_rt_update_time = current_time + rt_update_cadence
         print(heating_tendencies[0][:,:,10])
         for stage in range(len(intg.stages)):
             mesh.forward(mesh_vars, dt, stage)

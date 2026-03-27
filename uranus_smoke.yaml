@@ -91,5 +91,6 @@ problem:
   fluxstd: 0.2876051746237154
   umumean: 0.5454646944999695
   umustd: 0.2685113709805717
+  rt_update_cadence: 1.0e4
   modelfile: basemodel_12_19.pt
   syear: 2.5759e9

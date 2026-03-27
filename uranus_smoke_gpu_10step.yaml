@@ -1,8 +1,5 @@
 geometry:
   type: gnomonic-equiangle
-
-  # Two-Earth-radius planet. Vertical extent chosen to span ~1e6 Pa to ~1e3 Pa
-  # (10 bar to 10 hPa) for an isothermal H2-rich atmosphere.
   bounds:
     x1min: 2.4973E7
     x1max: 2.5023E7
@@ -10,18 +7,18 @@ geometry:
     x2max_pi: 0.25
     x3min_pi: -0.25
     x3max_pi: 0.25
-
   cells:
-    nx1: 50
-    nx2: 48
-    nx3: 48
+    nx1: 15
+    nx2: 32
+    nx3: 32
     nghost: 3
 
 distribute:
-  backend: gloo
+  backend: nccl
   layout: cubed-sphere
   nb2: 1
   nb3: 1
+  blocks_per_process: 6
   verbose: false
 
 dynamics:
@@ -35,15 +32,12 @@ dynamics:
     limiter: false
     max-iter: 30
     ftol: 1.e-6
-
   vertical-projection:
     type: temperature
     pressure-margin: 1.e-6
-
   reconstruct:
     vertical: { type: weno5, scale: true, shock: true }
     horizontal: { type: weno5, scale: true, shock: true }
-
   riemann-solver:
     type: hllc
 
@@ -58,45 +52,37 @@ boundary-condition:
 
 integration:
   type: rk3
-  cfl: 0.8
+  cfl: 0.9
   implicit-scheme: 9
-  nlim: -1
-  tlim: 4.32e7 # 500 days
+  nlim: 10
+  tlim: 1.0e10
   ncycle_out: 10
 
 outputs:
   - type: restart
-    dt: 8.64e2 # every 10 days
+    dt: 1.
   - type: netcdf
-    variables: [prim]
-    dt: 8.64e2 # every 10 day
+    variables: [prim, uov]
+    dt: 1.
 
 forcing:
   const-gravity:
-    grav1: -9.19  #Polar gravity (de Pater Planetary Sciences textbook)
-
-  # 33-day rotation/orbit period => omega = 2*pi / (33*86400) [s^-1]
+    grav1: -9.19
   coriolis:
     type: xyz
     omega1: 1.0119154e-4
 
 problem:
-  # Initial hydrostatic/isothermal state
-  Ts: 70.
+  Ts: 90.
   Tmin: 60.
-  Ps: 1.e6 # 10 bar at lower boundary
-
-  # Uniform initial water vapor profile (20% mole fraction)
+  Ps: 5.e5
   xH2O: 0.1
-
-  # Tidally locked forcing controls used by run_sub_neptune.py
   stellar_flux_nadir: 3.72
-  # stellar_surface_fraction: 1.0
   substellar_lon_deg: 90.0
   substellar_lat_deg: 0.0
   forcing_depth_bottom: 1
   forcing_depth_top: 1
-  sponge_tau: 3.5e3 #taken from hot jupiter case, must always be greater than dt!
+  sponge_tau: 3.5e3
   spongeheight: 40.e3
   tempmean: 75.00289916992188
   tempstd: 27.691502481761777
@@ -106,6 +92,6 @@ problem:
   fluxstd: 0.2876051746237154
   umumean: 0.5454646944999695
   umustd: 0.2685113709805717
-  rt_update_cadence: 1.0e4
+  rt_update_cadence: 1.0e3
   modelfile: basemodel_12_19.pt
   syear: 2.5759e9
