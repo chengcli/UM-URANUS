@@ -54,16 +54,16 @@ integration:
   type: rk3
   cfl: 0.9
   implicit-scheme: 9
-  nlim: 10
+  nlim: 99999
   tlim: 1.0e10
   ncycle_out: 10
 
 outputs:
   - type: restart
-    dt: 1.
+    dt: 1.0e5
   - type: netcdf
     variables: [prim, uov]
-    dt: 1.
+    dt: 1.0e5
 
 forcing:
   const-gravity:
@@ -75,7 +75,7 @@ forcing:
 problem:
   Ts: 90.
   Tmin: 60.
-  Ps: 5.e5
+  Ps: 1.5e5
   xH2O: 0.1
   stellar_flux_nadir: 3.72
   substellar_lon_deg: 90.0
@@ -92,6 +92,6 @@ problem:
   fluxstd: 0.2876051746237154
   umumean: 0.5454646944999695
   umustd: 0.2685113709805717
-  rt_update_cadence: 1.0e3
+  rt_update_cadence: 1.0e5
   modelfile: basemodel_12_19.pt
   syear: 2.5759e9

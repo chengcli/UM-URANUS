@@ -61,7 +61,7 @@ integration:
   cfl: 0.8
   implicit-scheme: 9
   nlim: -1
-  tlim: 4.32e7 # 500 days
+  tlim: 4.32e9 # 500 days
   ncycle_out: 10
 
 outputs:

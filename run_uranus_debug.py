@@ -353,9 +353,9 @@ def apply_tidal_forcing(
     current_time: float,
 ) -> None:
     hydro_u = block_vars["hydro_u"]
-    tau = 5e5
+    tau = 2e5
     if current_time < 50*tau:
-        hydro_u[kIPR] += (1+1e7*math.exp(-current_time/tau))*heating_tendency * dt
+        hydro_u[kIPR] += (1+1e6*math.exp(-current_time/tau))*heating_tendency * dt
     else:
         hydro_u[kIPR] += heating_tendency * dt
 
@@ -378,27 +378,16 @@ def compute_radiative_heating(
 
         pressbatch = hydro_w[kIPR].reshape(batch, nz)
         tempbatch = temperature.reshape(batch, nz)
-        regridtemp = regrid_tensor(pressbatch, tempbatch, forcing.basepress, forcing.tempmean, forcing.tempstd)
 
-        global_features, solar_zenith_angle, solar_forcing, _ = calcglobal(
-            forcing.lon,
-            forcing.lat,
-            current_time,
-            forcing.fluxmean,
-            forcing.fluxstd,
-            forcing.umumean,
-            forcing.umustd,
-            forcing.syear,
-            forcing.stellar_flux_nadir,
-            forcing.substellar_lon,
-            forcing.substellar_lat,
-            forcing.rotation_rate,
-        )
-        global_features = global_features.reshape(batch, 2)
-        solar_zenith_angle = solar_zenith_angle.reshape(nx3, nx2, 1).expand(nx3, nx2, nz)
-        solar_forcing = solar_forcing.reshape(nx3, nx2, 1).expand(nx3, nx2, nz)
-        output = forcing.model(regridtemp.to(torch.float32), global_features.to(torch.float32), forcing.mask)
-        heating = degrid(forcing.basepress, output, pressbatch, forcing.heatthr, forcing.heatsf).reshape(nx3, nx2, nz)
+        
+        heating = torch.zeros(nx3, nx2, nz)
+        solar_zenith_angle = torch.zeros(nx3, nx2, nz)
+        solar_forcing = torch.zeros(nx3, nx2, nz)
+        for i in range(nz):
+            if i < nz/2:
+                heating[:,:,i] += 1e-5
+            else:
+                heating[:,:,i] -= 1e-5
         heating_tendency = forcing.gas_constant * hydro_w[kIDN] * heating
         return heating_tendency, solar_zenith_angle, solar_forcing
 
