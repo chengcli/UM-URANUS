@@ -493,6 +493,51 @@ def write_restart_manifest(
         yaml.safe_dump(payload, f, sort_keys=False)
 
 
+def snapshot_merged_outputs(output_dir: str, basename: str) -> dict[str, tuple[int, int]]:
+    pattern_nc = Path(output_dir) / f"{basename}.*.nc"
+    pattern_restart = Path(output_dir) / f"{basename}.*.restart"
+    snapshots: dict[str, tuple[int, int]] = {}
+
+    for pattern in (pattern_nc, pattern_restart):
+        for match in glob.glob(str(pattern)):
+            path = Path(match)
+            if ".block" in path.name:
+                continue
+            if not path.is_file():
+                continue
+            stat = path.stat()
+            snapshots[path.name] = (stat.st_mtime_ns, stat.st_size)
+
+    return snapshots
+
+
+def report_merged_output_changes(
+    label: str,
+    *,
+    before: dict[str, tuple[int, int]],
+    after: dict[str, tuple[int, int]],
+    cycle: int,
+    current_time: float,
+) -> None:
+    changed = []
+    for name, meta in sorted(after.items()):
+        if before.get(name) != meta:
+            changed.append(name)
+
+    if changed:
+        print(
+            f"[OUTPUT-MERGE] {label}: cycle={cycle} time={current_time:.14e} "
+            f"artifacts={changed}",
+            flush=True,
+        )
+    else:
+        print(
+            f"[OUTPUT-MERGE] {label}: cycle={cycle} time={current_time:.14e} "
+            "artifacts=[]",
+            flush=True,
+        )
+
+
 def run_simulation(
     mesh: Mesh,
     eos,
@@ -511,9 +556,18 @@ def run_simulation(
     next_checkpoint_day = int(current_time // (10.0 * SECONDS_PER_DAY)) * 10 + 10
     checkpoint_dir = Path(output_dir) / "restart_checkpoints"
 
-    mesh.make_outputs(mesh_vars, current_time)
-
     cycle = 0
+    before_outputs = snapshot_merged_outputs(output_dir, basename)
+    mesh.make_outputs(mesh_vars, current_time)
+    after_outputs = snapshot_merged_outputs(output_dir, basename)
+    report_merged_output_changes(
+        "after-make_outputs",
+        before=before_outputs,
+        after=after_outputs,
+        cycle=cycle,
+        current_time=current_time,
+    )
+
     next_rt_update_time = current_time
     heating_tendencies: list[torch.Tensor | None] = [None] * len(mesh.blocks)
 
@@ -556,7 +610,16 @@ def run_simulation(
             break
 
         current_time += dt
+        before_outputs = snapshot_merged_outputs(output_dir, basename)
         mesh.make_outputs(mesh_vars, current_time)
+        after_outputs = snapshot_merged_outputs(output_dir, basename)
+        report_merged_output_changes(
+            "after-make_outputs",
+            before=before_outputs,
+            after=after_outputs,
+            cycle=cycle,
+            current_time=current_time,
+        )
 
         while current_time >= next_checkpoint_day * SECONDS_PER_DAY:
             write_restart_manifest(
@@ -624,7 +687,17 @@ def main() -> None:
         basename=basename,
     )
 
+    final_cycle = int(mesh.blocks[0].cycle()) if mesh.blocks else -1
+    before_outputs = snapshot_merged_outputs(args.output_dir, basename)
     mesh.finalize(mesh_vars, current_time)
+    after_outputs = snapshot_merged_outputs(args.output_dir, basename)
+    report_merged_output_changes(
+        "after-finalize",
+        before=before_outputs,
+        after=after_outputs,
+        cycle=final_cycle,
+        current_time=current_time,
+    )
 
 
 if __name__ == "__main__":
