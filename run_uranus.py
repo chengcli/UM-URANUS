@@ -7,6 +7,7 @@ import argparse
 import glob
 import math
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 # import numpy
@@ -24,8 +25,6 @@ class ForcingState:
     fluxstd: float
     umumean: float
     umustd: float
-    sponge_tau: float
-    spongeheight: float
     tempmean: float
     tempstd: float
     heatthr: float
@@ -183,6 +182,25 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def apply_snapy_top_sponge(config: dict) -> dict:
+    forcing = config.setdefault("forcing", {})
+    problem = config.get("problem", {})
+
+    tau = problem.get("sponge_tau")
+    width = problem.get("spongeheight")
+    if tau is None or width is None:
+        return config
+
+    forcing.setdefault(
+        "top-sponge-lyr",
+        {
+            "tau": float(tau),
+            "width": float(width),
+        },
+    )
+    return config
+
+
 def select_device(block: snapy.MeshBlock) -> torch.device:
     if torch.cuda.is_available() and block.options.layout().backend() == "nccl":
         return torch.device(block.options.device_str())
@@ -195,8 +213,20 @@ def eos_gas_constant(eos) -> float:
     return cv * (gamma - 1.0)
 
 
-def create_models(config_file: str, output_dir: str | None = None):
-    op = MeshOptions.from_yaml(config_file)
+def create_models(config_file: str, config: dict, output_dir: str | None = None):
+    temp_config_path: str | None = None
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".yaml", prefix="uranus_snapy_", delete=False, encoding="utf-8"
+    ) as f:
+        yaml.safe_dump(config, f, sort_keys=False)
+        temp_config_path = f.name
+
+    try:
+        op = MeshOptions.from_yaml(temp_config_path)
+    finally:
+        if temp_config_path and os.path.exists(temp_config_path):
+            os.unlink(temp_config_path)
+
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
         op.block().output_dir(output_dir)
@@ -296,8 +326,6 @@ def build_tidal_forcing_state(block: snapy.MeshBlock, config: dict, device: torc
         fluxstd=float(problem["fluxstd"]),
         umumean=float(problem["umumean"]),
         umustd=float(problem["umustd"]),
-        sponge_tau=float(problem["sponge_tau"]),
-        spongeheight=float(problem["spongeheight"]),
         tempmean=float(problem["tempmean"]),
         tempstd=float(problem["tempstd"]),
         heatthr=float(problem["heatthr"]),
@@ -562,9 +590,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     print(args)
-    config = load_config(args.config)
+    config = apply_snapy_top_sponge(load_config(args.config))
 
-    mesh, eos, device = create_models(args.config, args.output_dir)
+    mesh, eos, device = create_models(args.config, config, args.output_dir)
 
     if args.restart_name:
         mesh_vars, current_time = mesh.initialize_from_restart(args.restart_name)
