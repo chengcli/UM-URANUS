@@ -4,7 +4,7 @@ geometry:
   type: gnomonic-equiangle
   bounds:
     x1min: 2.4973E7
-    x1max: 2.5023E7
+    x1max: 2.5073E7
     x2min_pi: -0.25
     x2max_pi: 0.25
     x3min_pi: -0.25
@@ -84,8 +84,8 @@ problem:
   substellar_lat_deg: 0.0
   forcing_depth_bottom: 1
   forcing_depth_top: 1
-  sponge_tau: 3.5e3
-  spongeheight: 40.e3
+  sponge_tau: 3.5e6
+  spongeheight: 20.e3
   tempmean: 75.00289916992188
   tempstd: 27.691502481761777
   heatthr: 1.0000000000000001e-07

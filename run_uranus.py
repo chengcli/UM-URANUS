@@ -383,7 +383,7 @@ def apply_tidal_forcing(
     hydro_u = block_vars["hydro_u"]
     tau = 5e5
     if current_time < 50*tau:
-        hydro_u[kIPR] += (1+1e7*math.exp(-current_time/tau))*heating_tendency * dt
+        hydro_u[kIPR] += (1+1e6*math.exp(-current_time/tau))*heating_tendency * dt
     else:
         hydro_u[kIPR] += heating_tendency * dt
 
