@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import glob
 import math
 import os
 import resource
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 # import numpy
@@ -664,6 +666,113 @@ def log_phase(
         )
 
 
+class HangDiagnosisWatchdog:
+    def __init__(
+        self,
+        *,
+        enabled: bool,
+        timeout_sec: float,
+        repeat: bool,
+        cycle: int,
+        current_time: float,
+        rank: int,
+        label: str,
+        mesh: Mesh | None = None,
+    ) -> None:
+        self.enabled = enabled
+        self.timeout_sec = timeout_sec
+        self.repeat = repeat
+        self.cycle = cycle
+        self.current_time = current_time
+        self.rank = rank
+        self.label = label
+        self.mesh = mesh
+        self.armed = False
+        self.started_at = 0.0
+
+    def __enter__(self) -> "HangDiagnosisWatchdog":
+        if not self.enabled:
+            return self
+
+        self.started_at = time.monotonic()
+        print(
+            f"[HANG-DIAG] arm: rank={self.rank} cycle={self.cycle} "
+            f"time={self.current_time:.14e} label={self.label} "
+            f"timeout_sec={self.timeout_sec} repeat={self.repeat}",
+            flush=True,
+        )
+        if self.mesh is not None:
+            log_block_sync(
+                f"{self.label}-entry-block-state",
+                cycle=self.cycle,
+                current_time=self.current_time,
+                mesh=self.mesh,
+            )
+        faulthandler.dump_traceback_later(self.timeout_sec, repeat=self.repeat)
+        self.armed = True
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        if not self.enabled:
+            return False
+
+        if self.armed:
+            faulthandler.cancel_dump_traceback_later()
+        elapsed = time.monotonic() - self.started_at
+        status = "error" if exc_type is not None else "done"
+        print(
+            f"[HANG-DIAG] {status}: rank={self.rank} cycle={self.cycle} "
+            f"time={self.current_time:.14e} label={self.label} elapsed_sec={elapsed:.3f}",
+            flush=True,
+        )
+        if self.mesh is not None:
+            log_block_sync(
+                f"{self.label}-exit-block-state",
+                cycle=self.cycle,
+                current_time=self.current_time,
+                mesh=self.mesh,
+            )
+        return False
+
+
+def maybe_cuda_sync(
+    *,
+    enabled: bool,
+    device: torch.device | None,
+    label: str,
+    cycle: int,
+    current_time: float,
+    mesh: Mesh | None = None,
+    mesh_vars: list[dict[str, torch.Tensor]] | None = None,
+    debug_memory: bool = False,
+    debug_memory_summary: bool = False,
+) -> None:
+    if not enabled or device is None or device.type != "cuda" or not torch.cuda.is_available():
+        return
+
+    log_phase(
+        f"{label}-before-cuda-sync",
+        cycle=cycle,
+        current_time=current_time,
+        mesh=mesh,
+        mesh_vars=mesh_vars,
+        device=device,
+        debug_memory=debug_memory,
+        debug_memory_summary=debug_memory_summary,
+    )
+    torch.cuda.synchronize(device)
+    log_phase(
+        f"{label}-after-cuda-sync",
+        cycle=cycle,
+        current_time=current_time,
+        mesh=mesh,
+        mesh_vars=mesh_vars,
+        device=device,
+        debug_memory=debug_memory,
+        debug_memory_summary=debug_memory_summary,
+    )
+
+
 def run_simulation(
     mesh: Mesh,
     eos,
@@ -678,6 +787,10 @@ def run_simulation(
     device: torch.device,
     debug_memory: bool = False,
     debug_memory_summary: bool = False,
+    hang_diagnosis: bool = False,
+    hang_timeout_sec: float = 120.0,
+    hang_diagnosis_repeat: bool = False,
+    hang_sync_cuda: bool = False,
 ) -> tuple[list[dict[str, torch.Tensor]], float]:
     intg = mesh.module("block0.intg")
     intg.options.tlim(tlim)
@@ -808,7 +921,39 @@ def run_simulation(
                 device=device,
                 debug_memory=debug_memory,
             )
-            mesh.forward(mesh_vars, dt, stage)
+            maybe_cuda_sync(
+                enabled=hang_sync_cuda,
+                device=device,
+                label=f"forward-stage-{stage}-pre",
+                cycle=cycle,
+                current_time=current_time,
+                mesh=mesh,
+                mesh_vars=mesh_vars,
+                debug_memory=debug_memory,
+                debug_memory_summary=debug_memory_summary,
+            )
+            with HangDiagnosisWatchdog(
+                enabled=hang_diagnosis,
+                timeout_sec=hang_timeout_sec,
+                repeat=hang_diagnosis_repeat,
+                cycle=cycle,
+                current_time=current_time,
+                rank=current_rank(mesh),
+                label=f"mesh.forward(stage={stage})",
+                mesh=mesh,
+            ):
+                mesh.forward(mesh_vars, dt, stage)
+            maybe_cuda_sync(
+                enabled=hang_sync_cuda,
+                device=device,
+                label=f"forward-stage-{stage}-post",
+                cycle=cycle,
+                current_time=current_time,
+                mesh=mesh,
+                mesh_vars=mesh_vars,
+                debug_memory=debug_memory,
+                debug_memory_summary=debug_memory_summary,
+            )
             log_phase(
                 f"after-forward-stage-{stage}",
                 cycle=cycle,
@@ -935,6 +1080,27 @@ def parse_args() -> argparse.Namespace:
             "uranus.00005.restart or uranus.final.restart)"
         ),
     )
+    p.add_argument(
+        "--hang-diagnosis",
+        action="store_true",
+        help="Arm a watchdog around mesh.forward() that dumps Python stack traces if a stage stalls.",
+    )
+    p.add_argument(
+        "--hang-timeout-sec",
+        type=float,
+        default=120.0,
+        help="Seconds to wait before the hang watchdog emits a traceback dump.",
+    )
+    p.add_argument(
+        "--hang-diagnosis-repeat",
+        action="store_true",
+        help="Keep emitting traceback dumps every timeout interval until the stalled call returns.",
+    )
+    p.add_argument(
+        "--hang-sync-cuda",
+        action="store_true",
+        help="Force cuda synchronize() immediately before and after mesh.forward() to isolate queued GPU work.",
+    )
     return p.parse_args()
 
 
@@ -976,6 +1142,10 @@ def main() -> None:
         device=device,
         debug_memory=args.debug_memory,
         debug_memory_summary=args.debug_memory_summary,
+        hang_diagnosis=args.hang_diagnosis,
+        hang_timeout_sec=args.hang_timeout_sec,
+        hang_diagnosis_repeat=args.hang_diagnosis_repeat,
+        hang_sync_cuda=args.hang_sync_cuda,
     )
 
     final_cycle = int(mesh.blocks[0].cycle()) if mesh.blocks else -1
