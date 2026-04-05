@@ -1,0 +1,9 @@
+checkpoint_day: 30
+simulation_time_seconds: 2592277.7772445222
+simulation_time_days: 30.003215014404194
+config_file: /home/kevinsh/Model/scix/workspace/UM-URANUS/uranus_debug.yaml
+output_dir: /home/kevinsh/Model/scix/workspace/UM-URANUS/03_28_debug
+latest_restart_archive: null
+resume_hint:
+  command: python run_uranus.py -c uranus_debug.yaml --output-dir 03_28_debug --restart-name
+    <restart-file-name>
