@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+#!/bin/bash
+#SBATCH --partition=standard --time=59:00
+#SBATCH -n 6
+#SBATCH -o zgendatalog.txt
+#SBATCH --account=chengcli1
 set -euo pipefail
 set -x
 
