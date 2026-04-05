@@ -44,6 +44,7 @@ class ForcingState:
     substellar_lat: float
     rotation_rate: float
     rt_update_cadence: float
+    tidal_heating_decay_tau: float
 
 
 @dataclass
@@ -475,6 +476,7 @@ def build_tidal_forcing_state(block: snapy.MeshBlock, config: dict, device: torc
         substellar_lat=float(problem.get("substellar_lat_deg", 0.0) * math.pi / 180.0),
         rotation_rate=float(coriolis.get("omega1", 0.0)),
         rt_update_cadence=float(problem.get("rt_update_cadence", 1.0e4)),
+        tidal_heating_decay_tau=float(problem.get("tidal_heating_decay_tau", 5.0e5)),
     )
 
 
@@ -509,12 +511,14 @@ def apply_tidal_forcing(
     block_vars: dict[str, torch.Tensor],
     dt: float,
     heating_tendency: torch.Tensor,
+    forcing: ForcingState,
     current_time: float,
 ) -> None:
+    del block
     hydro_u = block_vars["hydro_u"]
-    tau = 5e5
-    if current_time < 50*tau:
-        hydro_u[kIPR] += (1+1e6*math.exp(-current_time/tau))*heating_tendency * dt
+    tau = forcing.tidal_heating_decay_tau
+    if tau > 0.0 and current_time < 50.0 * tau:
+        hydro_u[kIPR] += (1 + 1e6 * math.exp(-current_time / tau)) * heating_tendency * dt
     else:
         hydro_u[kIPR] += heating_tendency * dt
 
@@ -864,9 +868,9 @@ def run_simulation(
                 device=device,
                 debug_memory=debug_memory,
             )
-            for block, block_vars, heating_tendency in zip(mesh.blocks, mesh_vars, heating_tendencies):
+            for block, block_vars, heating_tendency, forcing in zip(mesh.blocks, mesh_vars, heating_tendencies, forcing_states):
                 if heating_tendency is not None:
-                    apply_tidal_forcing(block, block_vars, dt, heating_tendency,current_time)
+                    apply_tidal_forcing(block, block_vars, dt, heating_tendency, forcing, current_time)
             log_phase(
                 f"after-forcing-stage-{stage}",
                 cycle=cycle,

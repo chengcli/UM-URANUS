@@ -11,8 +11,10 @@ import os
 import resource
 import tempfile
 import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
+from types import MethodType
 # import numpy
 import torch
 import yaml
@@ -399,6 +401,100 @@ def log_memory(
         print(torch.cuda.memory_summary(device=device, abbreviated=False), flush=True)
 
 
+def log_runtime_diagnostics(
+    *,
+    args: argparse.Namespace,
+    config: dict,
+    mesh: Mesh | None,
+    device: torch.device | None,
+) -> None:
+    tracked_env = [
+        "RANK",
+        "LOCAL_RANK",
+        "WORLD_SIZE",
+        "MASTER_ADDR",
+        "MASTER_PORT",
+        "CUDA_VISIBLE_DEVICES",
+        "CUDA_DEVICE_ORDER",
+        "CUDA_LAUNCH_BLOCKING",
+        "TORCH_DISTRIBUTED_DEBUG",
+        "TORCH_NCCL_ENABLE_MONITORING",
+        "NCCL_DEBUG",
+        "NCCL_DEBUG_SUBSYS",
+        "NCCL_ASYNC_ERROR_HANDLING",
+        "NCCL_BLOCKING_WAIT",
+        "NCCL_IB_DISABLE",
+        "NCCL_SOCKET_IFNAME",
+        "NCCL_P2P_DISABLE",
+        "NCCL_SHM_DISABLE",
+    ]
+    env_summary = ", ".join(f"{key}={os.environ.get(key, '<unset>')}" for key in tracked_env)
+    distribute = config.get("distribute", {})
+    integration = config.get("integration", {})
+
+    print(
+        f"[RUNTIME] args: config={args.config} output_dir={args.output_dir} "
+        f"restart_name={args.restart_name} debug_memory={args.debug_memory} "
+        f"debug_memory_summary={args.debug_memory_summary} hang_sync_cuda={args.hang_sync_cuda} "
+        f"hang_diagnosis={args.hang_diagnosis} hang_timeout_sec={args.hang_timeout_sec} "
+        f"hang_diagnosis_repeat={args.hang_diagnosis_repeat}",
+        flush=True,
+    )
+    print(
+        f"[RUNTIME] config: backend={distribute.get('backend', '<missing>')} "
+        f"layout={distribute.get('layout', '<missing>')} "
+        f"blocks_per_process={distribute.get('blocks_per_process', '<missing>')} "
+        f"nb2={distribute.get('nb2', '<missing>')} nb3={distribute.get('nb3', '<missing>')} "
+        f"integrator={integration.get('type', '<missing>')} cfl={integration.get('cfl', '<missing>')}",
+        flush=True,
+    )
+    print(
+        f"[RUNTIME] env: {env_summary}",
+        flush=True,
+    )
+    print(
+        f"[RUNTIME] torch: version={torch.__version__} cuda_compiled={torch.version.cuda} "
+        f"cuda_available={torch.cuda.is_available()} cuda_device_count={torch.cuda.device_count()}",
+        flush=True,
+    )
+
+    if device is not None:
+        print(f"[RUNTIME] selected_device: {device}", flush=True)
+
+    if torch.cuda.is_available():
+        current_idx = torch.cuda.current_device()
+        props = torch.cuda.get_device_properties(current_idx)
+        print(
+            f"[RUNTIME] cuda-current: index={current_idx} name={props.name} "
+            f"capability={props.major}.{props.minor} total_memory={format_bytes(props.total_memory)}",
+            flush=True,
+        )
+        for idx in range(torch.cuda.device_count()):
+            device_props = torch.cuda.get_device_properties(idx)
+            print(
+                f"[RUNTIME] cuda-device[{idx}]: name={device_props.name} "
+                f"capability={device_props.major}.{device_props.minor} "
+                f"total_memory={format_bytes(device_props.total_memory)}",
+                flush=True,
+            )
+
+    if mesh is not None and mesh.blocks:
+        local_rank = current_rank(mesh)
+        print(
+            f"[RUNTIME] mesh: local_rank={local_rank} local_blocks={len(mesh.blocks)}",
+            flush=True,
+        )
+        for block_index, block in enumerate(mesh.blocks):
+            layout = block.get_layout()
+            face_name = _resolve_local_face_name(block)
+            neighbors = summarize_block_neighbors(block)
+            print(
+                f"[RUNTIME] mesh-block[{block_index}]: rank={int(layout.options.rank())} "
+                f"cycle={int(block.cycle())} face={face_name} neighbors={neighbors}",
+                flush=True,
+            )
+
+
 def log_block_sync(label: str, *, cycle: int, current_time: float, mesh: Mesh) -> None:
     states = snapshot_block_cycles(mesh)
     print(
@@ -406,6 +502,88 @@ def log_block_sync(label: str, *, cycle: int, current_time: float, mesh: Mesh) -
         f"in_sync={block_cycles_in_sync(states)} states={summarize_block_cycles(states)}",
         flush=True,
     )
+
+
+def summarize_block_neighbors(block: snapy.MeshBlock) -> str:
+    layout = block.get_layout()
+    rank = int(layout.options.rank())
+    loc = tuple(int(v) for v in layout.loc_of(rank))
+    entries = []
+    for label, offset in (
+        ("self", (0, 0, 0)),
+        ("x2-", (0, -1, 0)),
+        ("x2+", (0, 1, 0)),
+        ("x3-", (-1, 0, 0)),
+        ("x3+", (1, 0, 0)),
+    ):
+        try:
+            neighbor_rank = int(layout.neighbor_rank(loc, offset))
+        except TypeError:
+            neighbor_rank = int(layout.neighbor_rank(*loc, *offset))
+        except Exception:
+            entries.append(f"{label}=ERR")
+            continue
+        locality = "self" if neighbor_rank == rank else ("none" if neighbor_rank < 0 else "peer")
+        entries.append(f"{label}={neighbor_rank}:{locality}")
+    return "[" + ", ".join(entries) + "]"
+
+
+def install_forward_debug(mesh: Mesh) -> None:
+    original_forward = mesh.forward
+
+    def forward_debug(
+        self: Mesh,
+        vars: list[dict[str, torch.Tensor]],
+        dt: float,
+        stage: int,
+        *,
+        cycle: int,
+        current_time: float,
+    ) -> None:
+        if len(vars) != len(self.blocks):
+            raise ValueError(
+                f"forward_debug expects one Variables map per local MeshBlock; "
+                f"got {len(vars)} for {len(self.blocks)} blocks"
+            )
+
+        rank = current_rank(self)
+        print(
+            f"[FORWARD-DEBUG] begin: rank={rank} cycle={cycle} time={current_time:.14e} "
+            f"stage={stage} dt={dt:.14e} blocks={len(self.blocks)}",
+            flush=True,
+        )
+        log_block_sync(
+            f"forward-debug-stage-{stage}-entry",
+            cycle=cycle,
+            current_time=current_time,
+            mesh=self,
+        )
+        t0 = time.monotonic()
+        try:
+            original_forward(vars, dt, stage)
+        except Exception as exc:
+            print(
+                f"[FORWARD-DEBUG] error: rank={rank} cycle={cycle} "
+                f"time={current_time:.14e} stage={stage} "
+                f"exc_type={type(exc).__name__} exc={exc}",
+                flush=True,
+            )
+            traceback.print_exc()
+            raise
+
+        log_block_sync(
+            f"forward-debug-stage-{stage}-exit",
+            cycle=cycle,
+            current_time=current_time,
+            mesh=self,
+        )
+        print(
+            f"[FORWARD-DEBUG] done: rank={rank} cycle={cycle} time={current_time:.14e} "
+            f"stage={stage} elapsed_sec={time.monotonic() - t0:.6f}",
+            flush=True,
+        )
+
+    mesh.forward_debug = MethodType(forward_debug, mesh)
 
 
 def build_tidal_forcing_state(block: snapy.MeshBlock, config: dict, device: torch.device, eos) -> ForcingState:
@@ -942,7 +1120,13 @@ def run_simulation(
                 label=f"mesh.forward(stage={stage})",
                 mesh=mesh,
             ):
-                mesh.forward(mesh_vars, dt, stage)
+                mesh.forward_debug(
+                    mesh_vars,
+                    dt,
+                    stage,
+                    cycle=cycle,
+                    current_time=current_time,
+                )
             maybe_cuda_sync(
                 enabled=hang_sync_cuda,
                 device=device,
@@ -1106,10 +1290,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    print(args)
     config = apply_snapy_top_sponge(load_config(args.config))
 
     mesh, eos, device = create_models(args.config, config, args.output_dir)
+    install_forward_debug(mesh)
+    log_runtime_diagnostics(
+        args=args,
+        config=config,
+        mesh=mesh,
+        device=device,
+    )
 
     if args.restart_name:
         mesh_vars, current_time = mesh.initialize_from_restart(args.restart_name)
