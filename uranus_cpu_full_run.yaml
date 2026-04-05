@@ -10,8 +10,8 @@ geometry:
     x3max_pi: 0.25
   cells:
     nx1: 15
-    nx2: 32
-    nx3: 32
+    nx2: 10
+    nx3: 10
     nghost: 3
 
 distribute:

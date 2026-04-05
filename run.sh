@@ -60,6 +60,12 @@ MASTER_ADDR="${1:?MASTER_ADDR required}"
 NODE_RANK="${2:?NODE_RANK required}"
 PROC_PER_NODE="${3:?PROC_PER_NODE required}"
 NODES="${4:?NODES required}"
+TOTAL_PROCS=$((PROC_PER_NODE * NODES))
+
+if [[ "${TOTAL_PROCS}" -ne 6 ]]; then
+  echo "ERROR: run.sh is configured for exactly 6 total CPU ranks, got ${TOTAL_PROCS} (${NODES} nodes x ${PROC_PER_NODE} procs)." >&2
+  exit 1
+fi
 
 # --------- Run ----------
   #./run_hydro_dry.py --config=jupiter_gcm_dry.yaml \
@@ -69,4 +75,4 @@ torchrun \
   --node_rank="${NODE_RANK}" \
   --master_addr="${MASTER_ADDR}" \
   --master_port="${MASTER_PORT}" \
-  ./run_uranus.py --config=uranus_smoke_gpu.yaml --output_dir=output > /data/node${NODE_RANK}.log 2>&1
+  ./run_uranus.py --config=uranus_cpu_full_run.yaml --output-dir=output > /data/node${NODE_RANK}.log 2>&1

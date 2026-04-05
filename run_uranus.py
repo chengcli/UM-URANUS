@@ -204,7 +204,10 @@ def apply_snapy_top_sponge(config: dict) -> dict:
 
 
 def select_device(block: snapy.MeshBlock) -> torch.device:
-    if torch.cuda.is_available() and block.options.layout().backend() == "nccl":
+    backend = block.options.layout().backend()
+    if backend == "gloo":
+        return torch.device("cpu")
+    if backend == "nccl" and torch.cuda.is_available():
         return torch.device(block.options.device_str())
     return torch.device("cpu")
 
