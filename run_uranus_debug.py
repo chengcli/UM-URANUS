@@ -675,7 +675,32 @@ def install_forward_debug(mesh: Mesh) -> None:
             )
             t0 = time.monotonic()
             try:
-                block.forward(vars[block_index], dt, stage)
+                print(
+                    f"[FORWARD-PY] block-advance-local-begin: rank={rank} block={block_index} "
+                    f"block_rank={block_rank} face={face_name} cycle={cycle_text} "
+                    f"time={time_text} stage={stage}",
+                    flush=True,
+                )
+                block.advance_local(vars[block_index], dt, stage)
+                print(
+                    f"[FORWARD-PY] block-advance-local-done: rank={rank} block={block_index} "
+                    f"block_rank={block_rank} face={face_name} cycle={cycle_text} "
+                    f"time={time_text} stage={stage}",
+                    flush=True,
+                )
+                print(
+                    f"[FORWARD-PY] block-exchange-ghost-zones-begin: rank={rank} block={block_index} "
+                    f"block_rank={block_rank} face={face_name} cycle={cycle_text} "
+                    f"time={time_text} stage={stage}",
+                    flush=True,
+                )
+                block.exchange_ghost_zones(vars[block_index])
+                print(
+                    f"[FORWARD-PY] block-exchange-ghost-zones-done: rank={rank} block={block_index} "
+                    f"block_rank={block_rank} face={face_name} cycle={cycle_text} "
+                    f"time={time_text} stage={stage}",
+                    flush=True,
+                )
             except Exception as exc:
                 print(
                     f"[FORWARD-PY] block-error: rank={rank} block={block_index} "
