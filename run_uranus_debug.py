@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import faulthandler
 import glob
 import math
@@ -328,6 +329,115 @@ def format_bytes(nbytes: int | float) -> str:
     return f"{value:.2f}{unit}"
 
 
+def _finite_stat_line(name: str, tensor: torch.Tensor) -> str:
+    data = tensor.detach()
+    total = data.numel()
+    finite_mask = torch.isfinite(data)
+    finite_count = int(finite_mask.sum().item())
+    nan_count = int(torch.isnan(data).sum().item())
+    posinf_count = int(torch.isposinf(data).sum().item())
+    neginf_count = int(torch.isneginf(data).sum().item())
+
+    if finite_count > 0:
+        finite_values = data[finite_mask]
+        min_value = float(finite_values.min().item())
+        max_value = float(finite_values.max().item())
+        mean_value = float(finite_values.mean().item())
+        range_text = f"min={min_value:.6e} max={max_value:.6e} mean={mean_value:.6e}"
+    else:
+        range_text = "min=<nonfinite> max=<nonfinite> mean=<nonfinite>"
+
+    return (
+        f"{name}: finite={finite_count}/{total} nan={nan_count} "
+        f"+inf={posinf_count} -inf={neginf_count} {range_text}"
+    )
+
+
+def log_block_physical_state(
+    label: str,
+    *,
+    cycle: int,
+    current_time: float,
+    mesh: Mesh,
+    mesh_vars: list[dict[str, torch.Tensor]],
+    eos,
+    forcing_states: list[ForcingState],
+) -> None:
+    print(
+        f"[STATE-CHECK] {label}: cycle={cycle} time={current_time:.14e} blocks={len(mesh.blocks)}",
+        flush=True,
+    )
+    for block_index, (block, block_vars) in enumerate(zip(mesh.blocks, mesh_vars)):
+        face_name = _resolve_local_face_name(block)
+        hydro_u = block_vars.get("hydro_u")
+        if not isinstance(hydro_u, torch.Tensor):
+            print(
+                f"[STATE-CHECK][ERROR] block={block_index} face={face_name} missing hydro_u tensor",
+                flush=True,
+            )
+            continue
+
+        try:
+            hydro_w = eos.compute("U->W", [hydro_u])
+        except Exception as exc:
+            print(
+                f"[STATE-CHECK][ERROR] block={block_index} face={face_name} "
+                f"failed U->W conversion: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            continue
+
+        lines = [
+            _finite_stat_line("conserved_density[kIDN]", hydro_u[kIDN]),
+            _finite_stat_line("conserved_energy_slot[kIPR]", hydro_u[kIPR]),
+            _finite_stat_line("primitive_density[kIDN]", hydro_w[kIDN]),
+            _finite_stat_line("primitive_pressure[kIPR]", hydro_w[kIPR]),
+        ]
+
+        forcing = forcing_states[block_index] if block_index < len(forcing_states) else None
+        if forcing is not None:
+            gas_constant = float(forcing.gas_constant)
+            density = hydro_w[kIDN]
+            pressure = hydro_w[kIPR]
+            safe_denominator = gas_constant * density
+            valid_mask = torch.isfinite(pressure) & torch.isfinite(safe_denominator) & (safe_denominator != 0)
+            temperature = torch.full_like(pressure, float("nan"))
+            temperature[valid_mask] = pressure[valid_mask] / safe_denominator[valid_mask]
+            lines.append(_finite_stat_line("derived_temperature", temperature))
+
+        print(
+            f"[STATE-CHECK] block={block_index} face={face_name} " + " | ".join(lines),
+            flush=True,
+        )
+
+        negative_density_count = int((hydro_w[kIDN] < 0).sum().item())
+        nonpositive_pressure_count = int((hydro_w[kIPR] <= 0).sum().item())
+        if negative_density_count > 0:
+            print(
+                f"[STATE-CHECK][ERROR] block={block_index} face={face_name} "
+                f"negative primitive density count={negative_density_count}",
+                flush=True,
+            )
+        if nonpositive_pressure_count > 0:
+            print(
+                f"[STATE-CHECK][ERROR] block={block_index} face={face_name} "
+                f"nonpositive primitive pressure count={nonpositive_pressure_count}",
+                flush=True,
+            )
+        if not torch.isfinite(hydro_u).all():
+            print(
+                f"[STATE-CHECK][ERROR] block={block_index} face={face_name} "
+                f"non-finite values detected in hydro_u",
+                flush=True,
+            )
+        if not torch.isfinite(hydro_w).all():
+            print(
+                f"[STATE-CHECK][ERROR] block={block_index} face={face_name} "
+                f"non-finite values detected in hydro_w",
+                flush=True,
+            )
+
+
 def current_rank(mesh: Mesh | None = None) -> int:
     if mesh is not None and mesh.blocks:
         layout = mesh.blocks[0].get_layout()
@@ -531,6 +641,69 @@ def summarize_block_neighbors(block: snapy.MeshBlock) -> str:
 def install_forward_debug(mesh: Mesh) -> None:
     original_forward = mesh.forward
 
+    def forward_python(
+        self: Mesh,
+        vars: list[dict[str, torch.Tensor]],
+        dt: float,
+        stage: int,
+        *,
+        cycle: int | None = None,
+        current_time: float | None = None,
+    ) -> None:
+        if len(vars) != len(self.blocks):
+            raise ValueError(
+                f"forward_python expects one Variables map per local MeshBlock; "
+                f"got {len(vars)} for {len(self.blocks)} blocks"
+            )
+
+        rank = current_rank(self)
+
+        def run_block(block_index: int) -> None:
+            block = self.blocks[block_index]
+            layout = block.get_layout()
+            block_rank = int(layout.options.rank())
+            face_name = _resolve_local_face_name(block)
+            cycle_text = cycle if cycle is not None else int(block.cycle())
+            time_text = (
+                f"{current_time:.14e}" if current_time is not None else "<unknown>"
+            )
+            print(
+                f"[FORWARD-PY] block-begin: rank={rank} block={block_index} "
+                f"block_rank={block_rank} face={face_name} cycle={cycle_text} "
+                f"time={time_text} stage={stage} dt={dt:.14e}",
+                flush=True,
+            )
+            t0 = time.monotonic()
+            try:
+                block.forward(vars[block_index], dt, stage)
+            except Exception as exc:
+                print(
+                    f"[FORWARD-PY] block-error: rank={rank} block={block_index} "
+                    f"block_rank={block_rank} face={face_name} cycle={cycle_text} "
+                    f"time={time_text} stage={stage} "
+                    f"exc_type={type(exc).__name__} exc={exc}",
+                    flush=True,
+                )
+                traceback.print_exc()
+                raise
+            print(
+                f"[FORWARD-PY] block-done: rank={rank} block={block_index} "
+                f"block_rank={block_rank} face={face_name} cycle={cycle_text} "
+                f"time={time_text} stage={stage} "
+                f"elapsed_sec={time.monotonic() - t0:.6f}",
+                flush=True,
+            )
+
+        max_workers = max(1, len(self.blocks))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="mesh-forward") as pool:
+            futures = [pool.submit(run_block, block_index) for block_index in range(len(self.blocks))]
+            for block_index, future in enumerate(futures):
+                print(
+                    f"[FORWARD-PY] wait-block: rank={rank} block={block_index} stage={stage}",
+                    flush=True,
+                )
+                future.result()
+
     def forward_debug(
         self: Mesh,
         vars: list[dict[str, torch.Tensor]],
@@ -560,7 +733,14 @@ def install_forward_debug(mesh: Mesh) -> None:
         )
         t0 = time.monotonic()
         try:
-            original_forward(vars, dt, stage)
+            forward_python(
+                self,
+                vars,
+                dt,
+                stage,
+                cycle=cycle,
+                current_time=current_time,
+            )
         except Exception as exc:
             print(
                 f"[FORWARD-DEBUG] error: rank={rank} cycle={cycle} "
@@ -583,6 +763,8 @@ def install_forward_debug(mesh: Mesh) -> None:
             flush=True,
         )
 
+    mesh.native_forward = original_forward
+    mesh.forward = MethodType(forward_python, mesh)
     mesh.forward_debug = MethodType(forward_debug, mesh)
 
 
@@ -1099,6 +1281,15 @@ def run_simulation(
                 device=device,
                 debug_memory=debug_memory,
             )
+            log_block_physical_state(
+                f"before-forward-stage-{stage}",
+                cycle=cycle,
+                current_time=current_time,
+                mesh=mesh,
+                mesh_vars=mesh_vars,
+                eos=eos,
+                forcing_states=forcing_states,
+            )
             maybe_cuda_sync(
                 enabled=hang_sync_cuda,
                 device=device,
@@ -1147,6 +1338,15 @@ def run_simulation(
                 device=device,
                 debug_memory=debug_memory,
             )
+            log_block_physical_state(
+                f"after-forward-stage-{stage}",
+                cycle=cycle,
+                current_time=current_time,
+                mesh=mesh,
+                mesh_vars=mesh_vars,
+                eos=eos,
+                forcing_states=forcing_states,
+            )
             for block, block_vars, heating_tendency in zip(mesh.blocks, mesh_vars, heating_tendencies):
                 if heating_tendency is not None:
                     apply_tidal_forcing(block, block_vars, dt, heating_tendency,current_time)
@@ -1158,6 +1358,15 @@ def run_simulation(
                 mesh_vars=mesh_vars,
                 device=device,
                 debug_memory=debug_memory,
+            )
+            log_block_physical_state(
+                f"after-forcing-stage-{stage}",
+                cycle=cycle,
+                current_time=current_time,
+                mesh=mesh,
+                mesh_vars=mesh_vars,
+                eos=eos,
+                forcing_states=forcing_states,
             )
 
         err = mesh.check_redo(mesh_vars)
@@ -1315,6 +1524,15 @@ def main() -> None:
     block_diagnostics = [initialize_block_diagnostics(block) for block in mesh.blocks]
     for block, diagnostics in zip(mesh.blocks, block_diagnostics):
         register_user_output(block, diagnostics)
+    log_block_physical_state(
+        "post-initialize",
+        cycle=int(mesh.blocks[0].cycle()) if mesh.blocks else -1,
+        current_time=current_time,
+        mesh=mesh,
+        mesh_vars=mesh_vars,
+        eos=eos,
+        forcing_states=forcing_states,
+    )
 
     tlim = float(config["integration"]["tlim"])
     basename = Path(args.config).stem
