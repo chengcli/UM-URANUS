@@ -4,13 +4,13 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 import faulthandler
 import glob
 import math
 import os
 import resource
 import tempfile
+import threading
 import time
 import traceback
 from dataclasses import dataclass
@@ -23,6 +23,12 @@ import snapy
 from snapy import Mesh, MeshOptions, kConserved, kIDN, kIPR, kIV1
 
 SECONDS_PER_DAY = 86400.0
+FORWARD_PY_PRINT_LOCK = threading.Lock()
+
+
+def forward_py_log(message: str) -> None:
+    with FORWARD_PY_PRINT_LOCK:
+        print(message, flush=True)
 
 
 @dataclass
@@ -657,6 +663,9 @@ def install_forward_debug(mesh: Mesh) -> None:
             )
 
         rank = current_rank(self)
+        start_barrier = threading.Barrier(len(self.blocks) + 1)
+        thread_errors: list[BaseException | None] = [None] * len(self.blocks)
+        threads: list[threading.Thread] = []
 
         def run_block(block_index: int) -> None:
             block = self.blocks[block_index]
@@ -667,67 +676,75 @@ def install_forward_debug(mesh: Mesh) -> None:
             time_text = (
                 f"{current_time:.14e}" if current_time is not None else "<unknown>"
             )
-            print(
+            forward_py_log(
                 f"[FORWARD-PY] block-begin: rank={rank} block={block_index} "
                 f"block_rank={block_rank} face={face_name} cycle={cycle_text} "
                 f"time={time_text} stage={stage} dt={dt:.14e}",
-                flush=True,
             )
+            start_barrier.wait()
             t0 = time.monotonic()
             try:
-                print(
+                forward_py_log(
                     f"[FORWARD-PY] block-advance-local-begin: rank={rank} block={block_index} "
                     f"block_rank={block_rank} face={face_name} cycle={cycle_text} "
-                    f"time={time_text} stage={stage}",
-                    flush=True,
+                    f"time={time_text} stage={stage}"
                 )
                 block.advance_local(vars[block_index], dt, stage)
-                print(
+                forward_py_log(
                     f"[FORWARD-PY] block-advance-local-done: rank={rank} block={block_index} "
                     f"block_rank={block_rank} face={face_name} cycle={cycle_text} "
-                    f"time={time_text} stage={stage}",
-                    flush=True,
+                    f"time={time_text} stage={stage}"
                 )
-                print(
+                forward_py_log(
                     f"[FORWARD-PY] block-exchange-ghost-zones-begin: rank={rank} block={block_index} "
                     f"block_rank={block_rank} face={face_name} cycle={cycle_text} "
-                    f"time={time_text} stage={stage}",
-                    flush=True,
+                    f"time={time_text} stage={stage}"
                 )
                 block.exchange_ghost_zones(vars[block_index])
-                print(
+                forward_py_log(
                     f"[FORWARD-PY] block-exchange-ghost-zones-done: rank={rank} block={block_index} "
                     f"block_rank={block_rank} face={face_name} cycle={cycle_text} "
-                    f"time={time_text} stage={stage}",
-                    flush=True,
+                    f"time={time_text} stage={stage}"
                 )
             except Exception as exc:
-                print(
+                thread_errors[block_index] = exc
+                forward_py_log(
                     f"[FORWARD-PY] block-error: rank={rank} block={block_index} "
                     f"block_rank={block_rank} face={face_name} cycle={cycle_text} "
                     f"time={time_text} stage={stage} "
-                    f"exc_type={type(exc).__name__} exc={exc}",
-                    flush=True,
+                    f"exc_type={type(exc).__name__} exc={exc}"
                 )
                 traceback.print_exc()
-                raise
-            print(
+                return
+            forward_py_log(
                 f"[FORWARD-PY] block-done: rank={rank} block={block_index} "
                 f"block_rank={block_rank} face={face_name} cycle={cycle_text} "
                 f"time={time_text} stage={stage} "
-                f"elapsed_sec={time.monotonic() - t0:.6f}",
-                flush=True,
+                f"elapsed_sec={time.monotonic() - t0:.6f}"
             )
 
-        max_workers = max(1, len(self.blocks))
-        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="mesh-forward") as pool:
-            futures = [pool.submit(run_block, block_index) for block_index in range(len(self.blocks))]
-            for block_index, future in enumerate(futures):
-                print(
-                    f"[FORWARD-PY] wait-block: rank={rank} block={block_index} stage={stage}",
-                    flush=True,
-                )
-                future.result()
+        for block_index in range(len(self.blocks)):
+            thread = threading.Thread(
+                target=run_block,
+                args=(block_index,),
+                name=f"mesh-forward-{block_index}",
+            )
+            thread.start()
+            threads.append(thread)
+
+        forward_py_log(
+            f"[FORWARD-PY] all-blocks-ready: rank={rank} stage={stage} blocks={len(self.blocks)}"
+        )
+        start_barrier.wait()
+        for block_index, thread in enumerate(threads):
+            forward_py_log(
+                f"[FORWARD-PY] wait-block: rank={rank} block={block_index} stage={stage}"
+            )
+            thread.join()
+
+        for err in thread_errors:
+            if err is not None:
+                raise err
 
     def forward_debug(
         self: Mesh,
