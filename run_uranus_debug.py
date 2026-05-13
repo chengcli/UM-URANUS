@@ -368,6 +368,7 @@ def log_block_physical_state(
     mesh_vars: list[dict[str, torch.Tensor]],
     eos,
     forcing_states: list[ForcingState],
+    nghost: int = 0,
 ) -> None:
     print(
         f"[STATE-CHECK] {label}: cycle={cycle} time={current_time:.14e} blocks={len(mesh.blocks)}",
@@ -416,8 +417,20 @@ def log_block_physical_state(
             flush=True,
         )
 
-        negative_density_count = int((hydro_w[kIDN] < 0).sum().item())
-        nonpositive_pressure_count = int((hydro_w[kIPR] <= 0).sum().item())
+        density = hydro_w[kIDN]
+        pressure = hydro_w[kIPR]
+        negative_density_count = int((density < 0).sum().item())
+        nonpositive_pressure_count = int((pressure <= 0).sum().item())
+        interior_pressure_count = 0
+        interior_nonpositive_pressure_count = 0
+        if nghost > 0 and all(size > 2 * nghost for size in pressure.shape):
+            interior_pressure = pressure[
+                nghost:-nghost,
+                nghost:-nghost,
+                nghost:-nghost,
+            ]
+            interior_pressure_count = int(interior_pressure.numel())
+            interior_nonpositive_pressure_count = int((interior_pressure <= 0).sum().item())
         if negative_density_count > 0:
             print(
                 f"[STATE-CHECK][ERROR] block={block_index} face={face_name} "
@@ -427,7 +440,8 @@ def log_block_physical_state(
         if nonpositive_pressure_count > 0:
             print(
                 f"[STATE-CHECK][ERROR] block={block_index} face={face_name} "
-                f"nonpositive primitive pressure count={nonpositive_pressure_count}",
+                f"nonpositive primitive pressure count={nonpositive_pressure_count} "
+                f"interior_count={interior_nonpositive_pressure_count}/{interior_pressure_count}",
                 flush=True,
             )
         if not torch.isfinite(hydro_u).all():
@@ -1193,6 +1207,7 @@ def run_simulation(
     hang_timeout_sec: float = 120.0,
     hang_diagnosis_repeat: bool = False,
     hang_sync_cuda: bool = False,
+    nghost: int = 0,
 ) -> tuple[list[dict[str, torch.Tensor]], float]:
     intg = mesh.module("block0.intg")
     intg.options.tlim(tlim)
@@ -1265,6 +1280,19 @@ def run_simulation(
             debug_memory=debug_memory,
         )
         dt = mesh.max_time_step(mesh_vars)
+        if not math.isfinite(dt) or dt <= 0.0:
+            raise RuntimeError(
+                f"Invalid time step from mesh.max_time_step: cycle={cycle} "
+                f"time={current_time:.14e} dt={dt:.14e}"
+            )
+        if math.isfinite(tlim) and tlim > 0.0:
+            remaining_time = max(tlim - current_time, 0.0)
+            max_expected_dt = max(remaining_time, 10.0 * SECONDS_PER_DAY)
+            if dt > 10.0 * max_expected_dt:
+                raise RuntimeError(
+                    f"Unreasonably large time step from mesh.max_time_step: cycle={cycle} "
+                    f"time={current_time:.14e} dt={dt:.14e} tlim={tlim:.14e}"
+                )
         log_phase(
             "after-max_time_step",
             cycle=cycle,
@@ -1331,6 +1359,7 @@ def run_simulation(
                 mesh_vars=mesh_vars,
                 eos=eos,
                 forcing_states=forcing_states,
+                nghost=nghost,
             )
             maybe_cuda_sync(
                 enabled=hang_sync_cuda,
@@ -1353,13 +1382,7 @@ def run_simulation(
                 label=f"mesh.forward(stage={stage})",
                 mesh=mesh,
             ):
-                mesh.forward_debug(
-                    mesh_vars,
-                    dt,
-                    stage,
-                    cycle=cycle,
-                    current_time=current_time,
-                )
+                mesh.forward(mesh_vars, dt, stage)
             maybe_cuda_sync(
                 enabled=hang_sync_cuda,
                 device=device,
@@ -1388,6 +1411,7 @@ def run_simulation(
                 mesh_vars=mesh_vars,
                 eos=eos,
                 forcing_states=forcing_states,
+                nghost=nghost,
             )
             for block, block_vars, heating_tendency in zip(mesh.blocks, mesh_vars, heating_tendencies):
                 if heating_tendency is not None:
@@ -1409,6 +1433,7 @@ def run_simulation(
                 mesh_vars=mesh_vars,
                 eos=eos,
                 forcing_states=forcing_states,
+                nghost=nghost,
             )
 
         err = mesh.check_redo(mesh_vars)
@@ -1428,6 +1453,16 @@ def run_simulation(
             break
 
         current_time += dt
+        if not math.isfinite(current_time):
+            raise RuntimeError(
+                f"Simulation time became non-finite: cycle={cycle} dt={dt:.14e} "
+                f"time={current_time:.14e}"
+            )
+        if math.isfinite(tlim) and tlim > 0.0 and current_time > 10.0 * tlim:
+            raise RuntimeError(
+                f"Simulation time jumped far beyond tlim: cycle={cycle} dt={dt:.14e} "
+                f"time={current_time:.14e} tlim={tlim:.14e}"
+            )
         before_merged_outputs = snapshot_outputs(output_dir, basename, include_block=False)
         before_block_outputs = snapshot_outputs(output_dir, basename, include_block=True)
         log_phase(
@@ -1461,7 +1496,7 @@ def run_simulation(
             current_time=current_time,
         )
 
-        while current_time >= next_checkpoint_day * SECONDS_PER_DAY:
+        if current_time >= next_checkpoint_day * SECONDS_PER_DAY:
             log_phase(
                 "before-write_restart_manifest",
                 cycle=cycle,
@@ -1488,7 +1523,7 @@ def run_simulation(
                 device=device,
                 debug_memory=debug_memory,
             )
-            next_checkpoint_day += 10
+            next_checkpoint_day = int(current_time // (10.0 * SECONDS_PER_DAY)) * 10 + 10
 
     return mesh_vars, current_time
 
@@ -1540,11 +1575,25 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    print("[STARTUP] entered main", flush=True)
     args = parse_args()
+    print(f"[STARTUP] parsed args config={args.config} output_dir={args.output_dir}", flush=True)
+    if args.hang_diagnosis:
+        faulthandler.dump_traceback_later(args.hang_timeout_sec, repeat=args.hang_diagnosis_repeat)
+        print(
+            f"[STARTUP] armed startup watchdog timeout_sec={args.hang_timeout_sec} "
+            f"repeat={args.hang_diagnosis_repeat}",
+            flush=True,
+        )
     config = apply_snapy_top_sponge(load_config(args.config))
+    nghost = int(config.get("geometry", {}).get("cells", {}).get("nghost", 0))
+    print("[STARTUP] loaded config", flush=True)
 
+    print("[STARTUP] creating snapy Mesh", flush=True)
     mesh, eos, device = create_models(args.config, config, args.output_dir)
-    install_forward_debug(mesh)
+    if args.hang_diagnosis:
+        faulthandler.cancel_dump_traceback_later()
+    print(f"[STARTUP] created snapy Mesh device={device}", flush=True)
     log_runtime_diagnostics(
         args=args,
         config=config,
@@ -1574,6 +1623,7 @@ def main() -> None:
         mesh_vars=mesh_vars,
         eos=eos,
         forcing_states=forcing_states,
+        nghost=nghost,
     )
 
     tlim = float(config["integration"]["tlim"])
@@ -1596,6 +1646,7 @@ def main() -> None:
         hang_timeout_sec=args.hang_timeout_sec,
         hang_diagnosis_repeat=args.hang_diagnosis_repeat,
         hang_sync_cuda=args.hang_sync_cuda,
+        nghost=nghost,
     )
 
     final_cycle = int(mesh.blocks[0].cycle()) if mesh.blocks else -1

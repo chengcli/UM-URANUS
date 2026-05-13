@@ -8,9 +8,9 @@ geometry:
     x3min_pi: -0.25
     x3max_pi: 0.25
   cells:
-    nx1: 15
-    nx2: 32
-    nx3: 32
+    nx1: 10
+    nx2: 10
+    nx3: 10
     nghost: 3
 
 distribute:
@@ -52,18 +52,18 @@ boundary-condition:
 
 integration:
   type: rk3
-  cfl: 0.9
+  cfl: 0.3
   implicit-scheme: 9
-  nlim: 99999
-  tlim: 1.0e10
-  ncycle_out: 10
+  nlim: 10
+  tlim: 1.0e5
+  ncycle_out: 1
 
 outputs:
   - type: restart
-    dt: 1.0e10
+    dt: 1.0e99
   - type: netcdf
     variables: [prim, uov]
-    dt: 1.0e5
+    dt: 1.0e99
 
 forcing:
   const-gravity:
@@ -86,5 +86,5 @@ problem:
   debug_top_temp_rate: -1.0e-6
   sponge_tau: 3.5e6
   spongeheight: 20.e3
-  rt_update_cadence: 1.0e5
+  rt_update_cadence: 1.0e99
   syear: 2.5759e9
