@@ -1,0 +1,172 @@
+reference-state:
+  Tref: 0.
+  Pref: 1.e5
+
+# Background atmosphere: hydrogen + water vapor/cloud/precipitation
+species:
+  - name: dry
+    composition: { H: 2 }
+    cv_R: 2.5
+
+  - name: H2O
+    composition: { H: 2, O: 1 }
+    cv_R: 2.5
+    u0_R: 0.
+
+  - name: H2O(l)
+    composition: { H: 2, O: 1 }
+    cv_R: 9.0
+    u0_R: -3430.
+
+  - name: H2O(l,p)
+    composition: { H: 2, O: 1 }
+    cv_R: 9.0
+    u0_R: -3430.
+
+geometry:
+  type: gnomonic-equiangle
+
+  # Two-Earth-radius planet. Smoke-test vertical extent: 250 km.
+  bounds:
+    x1min: 1.6628e7
+    x1max: 1.6878e7
+    x2min_pi: -0.25
+    x2max_pi: 0.25
+    x3min_pi: -0.25
+    x3max_pi: 0.25
+
+  cells:
+    nx1: 12
+    nx2: 24
+    nx3: 24
+    nghost: 4
+
+distribute:
+  backend: nccl
+  layout: cubed-sphere
+  blocks_per_process: 6
+  nb2: 1
+  nb3: 1
+  verbose: false
+
+dynamics:
+  equation-of-state:
+    type: ideal-moist
+    density-floor: 1.e-10
+    pressure-floor: 1.e-10
+    tracer-floor: 1.e-12
+    limiter: true
+    max-iter: 30
+    ftol: 1.e-6
+
+  vertical-projection:
+    type: temperature
+    pressure-margin: 1.e-6
+
+  reconstruct:
+    vertical: { type: weno3, scale: false, shock: false }
+    horizontal: { type: weno3, scale: false, shock: false }
+
+  riemann-solver:
+    type: hllc
+
+boundary-condition:
+  internal:
+    solid-density: 1.e3
+    solid-pressure: 1.e9
+    max-iter: 5
+
+  external:
+    x1-inner: reflecting
+    x1-outer: reflecting
+    x2-inner: custom
+    x2-outer: custom
+    x3-inner: custom
+    x3-outer: custom
+
+integration:
+  type: rk3
+  cfl: 0.02
+  implicit-scheme: 9
+  nlim: 99999
+  tlim: 1.e10
+  ncycle_out: 1000000
+
+outputs:
+  - type: restart
+    dt: 8.64e5 # every 10 days
+  - type: netcdf
+    variables: [prim]
+    dt: 8.64e4 # every day
+  - type: netcdf
+    variables: [thermo, path]
+    dt: 8.64e4
+
+forcing:
+  const-gravity:
+    grav1: 0.0
+
+  # 33-day rotation/orbit period => omega = 2*pi / (33*86400) [s^-1]
+  coriolis:
+    type: xyz
+    omega1: 0.0
+
+sedimentation:
+  radius:
+    H2O(l,p): 1.0e-10
+
+  density:
+    H2O(l,p): 1000.
+
+  const-vsed:
+    H2O(l,p): 0.0
+
+reactions:
+  - equation: H2O <=> H2O(l)
+    type: nucleation
+    rate-constant: { formula: h2o_ideal }
+
+  - equation: H2O(l) => H2O(l,p)
+    type: coagulation
+    rate-constant: { A: 3.e-6, b: 0, Ea_R: 0. }
+
+  - equation: H2O(l,p) => H2O
+    type: evaporation
+    rate-constant:
+      {
+        formula: h2o_ideal,
+        diff_c: 0.2e-4,
+        diff_T: 0.,
+        diff_P: 0.,
+        vm: 18.e-6,
+        diameter: 1.0e-4,
+      }
+
+problem:
+  # Initial hydrostatic/isothermal state
+  Ts: 600.
+  Tmin: 200.
+  Ps: 1.e6 # 10 bar at lower boundary
+  initial_profile_method: isothermal
+
+  # Nearly dry smoke-test initial profile. The full moist case is much stiffer.
+  xdry: 0.999999
+  xH2O: 1.e-6
+  initial_velocity_noise: 0.0
+  skip_kinetics: true
+
+  # Rayleigh damping of vertical momentum near the top boundary for debug runs.
+  vertical_damping_top_layers: 0
+  vertical_damping_timescale: 0.0
+
+  # Tidally locked forcing controls used by run_sub_neptune.py
+  stellar_flux_nadir: 0.0
+  stellar_surface_fraction: 1.0
+  substellar_lon_deg: 90.0
+  substellar_lat_deg: 0.0
+  forcing_depth_bottom: 1
+  forcing_depth_top: 1
+
+  # Gaussian cooling profile parameters
+  cooling_center_height: 1.6753e7  # height at which cooling peaks [m]
+  cooling_sigma: 2.5e4             # Gaussian width (standard deviation) [m]
