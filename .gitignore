@@ -15,6 +15,6 @@
 
 # part file
 *.part
-*outputs*
+*output*
 # cache
 __pycache__

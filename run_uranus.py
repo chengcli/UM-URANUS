@@ -61,7 +61,7 @@ def regrid_tensor(x: torch.Tensor, y: torch.Tensor, xq: torch.Tensor, tempmean: 
 
     x_flip = torch.flip(x, dims=[1])
     y_flip = torch.flip(y, dims=[1])
-    xq_expand = xq.unsqueeze(0).expand(batch_size, nq)
+    xq_expand = xq.unsqueeze(0).expand(batch_size, nq).contiguous()
 
     idx = torch.searchsorted(x_flip, xq_expand)
     idx = torch.clamp(idx, 1, nz - 1)
@@ -110,7 +110,7 @@ def degrid(x: torch.Tensor, normy: torch.Tensor, xq: torch.Tensor, heatthr: floa
     x_flip = torch.flip(x_data, dims=[0])
     y_flip = torch.flip(y, dims=[1])
 
-    idx = torch.searchsorted(x_flip, xq)
+    idx = torch.searchsorted(x_flip, xq.contiguous())
     idx = torch.clamp(idx, 1, nreal - 1)
 
     x_exp = x_flip.unsqueeze(0).expand(batch_size, -1)
@@ -546,7 +546,6 @@ def apply_tidal_forcing(
     forcing: ForcingState,
     current_time: float,
 ) -> None:
-    del block
     hydro_u = block_vars["hydro_u"]
     tau = forcing.tidal_heating_decay_tau
     if tau > 0.0 and current_time < 50.0 * tau:
