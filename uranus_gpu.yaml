@@ -4,11 +4,11 @@ geometry:
   type: cartesian
   bounds:
     x1min: 0.
-    x1max: 300.e3
+    x1max: 40.e3
     x2min: 0.
-    x2max: 2400.e3
+    x2max: 320.e3
     x3min: 0.
-    x3max: 2400.e3
+    x3max: 320.e3
   cells:
     nx1: 100
     nx2: 100
@@ -76,11 +76,11 @@ forcing:
     grav1: -9.19
 
   top-cool:
-    flux: -100.
+    flux: -1.
     depth: 5
 
   bot-heat:
-    flux: 100
+    flux: 1.
     depth: 5
 
 problem:
