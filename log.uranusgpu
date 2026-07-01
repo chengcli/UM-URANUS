@@ -1,0 +1,21 @@
+[W701 09:10:02.408114192 socket.cpp:764] [c10d] The client socket cannot be initialized to connect to [localhost]:29501 (errno: 97 - Address family not supported by protocol).
+[Gloo] Rank 0 is connected to 0 peer ranks. Expected number of connected peer ranks is : 0
+[HydroOptions] -- constant gravity options --
+* grav1 = -9.19
+* grav2 = 0
+* grav3 = 0
+* non-hydrostatic = 1
+[HydroOptions] -- top cooling options --
+* flux = -100
+* depth = 5
+[HydroOptions] -- bottom heating options --
+* flux = 100
+* depth = 5
+
+Terminating on time limit
+time=9e+98 cycle=27
+tlim=5e+07 nlim=-1
+
+million cells-per-cycle = 96.4723
+cpu time used (s) = 3.62586
+million cell-updates/second = 26.6068

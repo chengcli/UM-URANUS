@@ -184,6 +184,13 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def resolve_config_relative_path(config_file: str, raw_path: str) -> Path:
+    candidate = Path(raw_path).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    return Path(config_file).resolve().parent / candidate
+
+
 def apply_snapy_top_sponge(config: dict) -> dict:
     forcing = config.setdefault("forcing", {})
     problem = config.get("problem", {})
@@ -220,9 +227,15 @@ def eos_gas_constant(eos) -> float:
 
 def create_models(config_file: str, config: dict, output_dir: str | None = None):
     config_stem = Path(config_file).stem
+    config_dir = Path(config_file).resolve().parent
     temp_config_path: str | None = None
     with tempfile.NamedTemporaryFile(
-        "w", suffix=".yaml", prefix="uranus_snapy_", delete=False, encoding="utf-8"
+        "w",
+        suffix=".yaml",
+        prefix="uranus_snapy_",
+        dir=config_dir,
+        delete=False,
+        encoding="utf-8",
     ) as f:
         yaml.safe_dump(config, f, sort_keys=False)
         temp_config_path = f.name
@@ -251,6 +264,19 @@ def create_models(config_file: str, config: dict, output_dir: str | None = None)
 
     eos = mesh.blocks[0].module("hydro.eos")
     return mesh, eos, device
+
+
+def load_radiative_model(config_file: str, config: dict, device: torch.device) -> torch.jit.ScriptModule:
+    model_path = resolve_config_relative_path(config_file, str(config["problem"]["modelfile"]))
+    if not model_path.is_file():
+        raise FileNotFoundError(
+            f"Radiative model file not found: {model_path} "
+            f"(from problem.modelfile={config['problem']['modelfile']!r})"
+        )
+
+    model = torch.jit.load(str(model_path), map_location=device)
+    model.eval()
+    return model
 
 
 def build_isothermal_profile(block: snapy.MeshBlock, eos, config: dict) -> torch.Tensor:
@@ -420,7 +446,13 @@ def log_block_sync(label: str, *, cycle: int, current_time: float, mesh: Mesh) -
     )
 
 
-def build_tidal_forcing_state(block: snapy.MeshBlock, config: dict, device: torch.device, eos) -> ForcingState:
+def build_tidal_forcing_state(
+    block: snapy.MeshBlock,
+    config: dict,
+    device: torch.device,
+    eos,
+    model: torch.jit.ScriptModule,
+) -> ForcingState:
     coord = block.module("coord")
     x2v = coord.buffer("x2v")
     x3v = coord.buffer("x3v")
@@ -431,9 +463,6 @@ def build_tidal_forcing_state(block: snapy.MeshBlock, config: dict, device: torc
 
     problem = config["problem"]
     coriolis = config["forcing"]["coriolis"]
-    model = torch.jit.load(problem["modelfile"]).to(device)
-    model.eval()
-
     batch = x2v.shape[0] * x3v.shape[0]
     mask = torch.ones((batch, 256), dtype=torch.bool, device=device)
     mask[:, :100] = False
@@ -997,6 +1026,7 @@ def main() -> None:
     config = apply_snapy_top_sponge(load_config(args.config))
 
     mesh, eos, device = create_models(args.config, config, args.output_dir)
+    model = load_radiative_model(args.config, config, device)
 
     if args.restart_name:
         mesh_vars, current_time = mesh.initialize_from_restart(args.restart_name)
@@ -1008,7 +1038,7 @@ def main() -> None:
             if isinstance(data, torch.Tensor):
                 print(f"block[{i}] {key}: shape={tuple(data.shape)} dtype={data.dtype} device={data.device}")
 
-    forcing_states = [build_tidal_forcing_state(block, config, device, eos) for block in mesh.blocks]
+    forcing_states = [build_tidal_forcing_state(block, config, device, eos, model) for block in mesh.blocks]
     block_diagnostics = [initialize_block_diagnostics(block) for block in mesh.blocks]
     for block, diagnostics in zip(mesh.blocks, block_diagnostics):
         register_user_output(block, diagnostics)
