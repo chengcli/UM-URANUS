@@ -1,0 +1,92 @@
+geometry:
+  type: cartesian
+
+  bounds:
+    x1min: 0.
+    x1max: 300.e3
+    x2min: 0.
+    x2max: 2400.e3
+    x3min: 0.
+    x3max: 2400.e3
+
+  cells:
+    nx1: 100
+    nx2: 100
+    nx3: 100
+    nghost: 3
+
+distribute:
+  backend: nccl
+  layout: slab
+  nb2: 1
+  nb3: 1
+  verbose: false
+
+dynamics:
+  equation-of-state:
+    type: ideal-gas
+    gammad: 1.4
+    weight: 2.2e-3
+    density-floor:  1.e-10
+    pressure-floor: 1.e-10
+    tracer-floor: 1.e-10
+    limiter: false
+
+  vertical-projection:
+    type: temperature
+    pressure-margin: 1.e-6
+
+  reconstruct:
+    vertical: {type: weno5, scale: false, shock: false}
+    horizontal: {type: weno5, scale: false, shock: false}
+
+  riemann-solver:
+    type: lmars
+
+boundary-condition:
+  external:
+    x1-inner: reflecting
+    x1-outer: reflecting
+    x2-inner: periodic
+    x2-outer: periodic
+    x3-inner: periodic
+    x3-outer: periodic
+
+integration:
+  type: rk3
+  cfl: 0.9
+  implicit-scheme: 1
+  nlim: -1
+  tlim: 500.e5
+  ncycle_out: 50
+
+scalar:
+  nvar: 1
+  names: [tracer]
+
+outputs:
+  - type: restart
+    dt: 20.E5
+  - type: netcdf
+    variables: [prim, uov]
+    dt: 1.E5
+  - type: netcdf
+    variables: [scalar_prim]
+    dt: 1.E5
+
+forcing:
+  const-gravity:
+    grav1: -22.
+
+  top-cool:
+    flux: -100.
+    depth: 5
+
+  bot-heat:
+    flux: 100
+    depth: 5
+
+problem:
+  Ps: 100.e5
+  Ts: 610.
+  Tmin: 110.

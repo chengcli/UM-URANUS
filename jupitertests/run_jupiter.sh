@@ -1,0 +1,1 @@
+#DEVICE_ID=1 python -u run_jupiter_dry.py -c jup_dry_100.yaml --output-dir ./260520_dry_100 &> log.260520_dry_100 &
