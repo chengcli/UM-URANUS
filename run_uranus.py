@@ -7,7 +7,6 @@ import argparse
 import glob
 import math
 import os
-import resource
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -325,127 +324,6 @@ def _resolve_local_face_name(block: snapy.MeshBlock) -> str:
     return snapy.coord.get_cs_face_name(face_id)
 
 
-def snapshot_block_cycles(mesh: Mesh) -> list[tuple[int, int, int, str]]:
-    states: list[tuple[int, int, int, str]] = []
-    for block_index, block in enumerate(mesh.blocks):
-        layout = block.get_layout()
-        rank = int(layout.options.rank())
-        cycle = int(block.cycle())
-        face_name = _resolve_local_face_name(block)
-        states.append((block_index, rank, cycle, face_name))
-    return states
-
-
-def summarize_block_cycles(states: list[tuple[int, int, int, str]]) -> str:
-    if not states:
-        return "[]"
-    return "[" + ", ".join(
-        f"block={block_index}:rank={rank}:cycle={cycle}:face={face_name}"
-        for block_index, rank, cycle, face_name in states
-    ) + "]"
-
-
-def block_cycles_in_sync(states: list[tuple[int, int, int, str]]) -> bool:
-    if not states:
-        return True
-    cycles = {cycle for _, _, cycle, _ in states}
-    return len(cycles) == 1
-
-
-def format_bytes(nbytes: int | float) -> str:
-    units = ["B", "KiB", "MiB", "GiB", "TiB"]
-    value = float(nbytes)
-    unit = units[0]
-    for next_unit in units[1:]:
-        if abs(value) < 1024.0:
-            break
-        value /= 1024.0
-        unit = next_unit
-    return f"{value:.2f}{unit}"
-
-
-def current_rank(mesh: Mesh | None = None) -> int:
-    if mesh is not None and mesh.blocks:
-        layout = mesh.blocks[0].get_layout()
-        return int(layout.options.rank())
-    return int(os.environ.get("RANK", "-1"))
-
-
-def estimate_tensor_bytes(mesh_vars: list[dict[str, torch.Tensor]] | None) -> int:
-    if mesh_vars is None:
-        return 0
-
-    total = 0
-    for block_vars in mesh_vars:
-        for data in block_vars.values():
-            if isinstance(data, torch.Tensor):
-                total += data.numel() * data.element_size()
-    return total
-
-
-def get_rss_bytes() -> int:
-    # Linux ru_maxrss is reported in KiB.
-    return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024
-
-
-def log_memory(
-    label: str,
-    *,
-    cycle: int,
-    current_time: float,
-    device: torch.device | None,
-    mesh: Mesh | None = None,
-    mesh_vars: list[dict[str, torch.Tensor]] | None = None,
-    include_summary: bool = False,
-) -> None:
-    rank = current_rank(mesh)
-    tensor_bytes = estimate_tensor_bytes(mesh_vars)
-    rss_bytes = get_rss_bytes()
-
-    if device is None:
-        print(
-            f"[MEMORY] {label}: rank={rank} cycle={cycle} time={current_time:.14e} "
-            f"device=unknown rss={format_bytes(rss_bytes)} tensor_bytes={format_bytes(tensor_bytes)}",
-            flush=True,
-        )
-        return
-
-    if device.type != "cuda" or not torch.cuda.is_available():
-        print(
-            f"[MEMORY] {label}: rank={rank} cycle={cycle} time={current_time:.14e} "
-            f"device={device} rss={format_bytes(rss_bytes)} tensor_bytes={format_bytes(tensor_bytes)}",
-            flush=True,
-        )
-        return
-
-    free_bytes, total_bytes = torch.cuda.mem_get_info(device)
-    allocated_bytes = torch.cuda.memory_allocated(device)
-    reserved_bytes = torch.cuda.memory_reserved(device)
-    max_allocated_bytes = torch.cuda.max_memory_allocated(device)
-    max_reserved_bytes = torch.cuda.max_memory_reserved(device)
-
-    print(
-        f"[MEMORY] {label}: rank={rank} cycle={cycle} time={current_time:.14e} "
-        f"device={device} alloc={format_bytes(allocated_bytes)} "
-        f"reserved={format_bytes(reserved_bytes)} max_alloc={format_bytes(max_allocated_bytes)} "
-        f"max_reserved={format_bytes(max_reserved_bytes)} free={format_bytes(free_bytes)} "
-        f"total={format_bytes(total_bytes)} rss={format_bytes(rss_bytes)} "
-        f"tensor_bytes={format_bytes(tensor_bytes)}",
-        flush=True,
-    )
-    if include_summary:
-        print(torch.cuda.memory_summary(device=device, abbreviated=False), flush=True)
-
-
-def log_block_sync(label: str, *, cycle: int, current_time: float, mesh: Mesh) -> None:
-    states = snapshot_block_cycles(mesh)
-    print(
-        f"[BLOCK-SYNC] {label}: cycle={cycle} time={current_time:.14e} "
-        f"in_sync={block_cycles_in_sync(states)} states={summarize_block_cycles(states)}",
-        flush=True,
-    )
-
-
 def build_tidal_forcing_state(
     block: snapy.MeshBlock,
     config: dict,
@@ -659,92 +537,6 @@ def write_restart_manifest(
         yaml.safe_dump(payload, f, sort_keys=False)
 
 
-def snapshot_outputs(
-    output_dir: str,
-    basename: str,
-    *,
-    include_block: bool,
-) -> dict[str, tuple[int, int]]:
-    pattern_nc = Path(output_dir) / f"{basename}.*.nc"
-    pattern_restart = Path(output_dir) / f"{basename}.*.restart"
-    snapshots: dict[str, tuple[int, int]] = {}
-
-    for pattern in (pattern_nc, pattern_restart):
-        for match in glob.glob(str(pattern)):
-            path = Path(match)
-            is_block = ".block" in path.name
-            if is_block and not include_block:
-                continue
-            if (not is_block) and include_block:
-                continue
-            if not path.is_file():
-                continue
-            stat = path.stat()
-            snapshots[path.name] = (stat.st_mtime_ns, stat.st_size)
-
-    return snapshots
-
-
-def report_output_changes(
-    label: str,
-    *,
-    before_merged: dict[str, tuple[int, int]],
-    after_merged: dict[str, tuple[int, int]],
-    before_block: dict[str, tuple[int, int]],
-    after_block: dict[str, tuple[int, int]],
-    cycle: int,
-    current_time: float,
-) -> None:
-    changed_merged = []
-    for name, meta in sorted(after_merged.items()):
-        if before_merged.get(name) != meta:
-            changed_merged.append(name)
-
-    changed_block = []
-    for name, meta in sorted(after_block.items()):
-        if before_block.get(name) != meta:
-            changed_block.append(name)
-
-    print(
-        f"[OUTPUT-MERGE] {label}: cycle={cycle} time={current_time:.14e} "
-        f"case_no_block_and_no_merge={not changed_block and not changed_merged} "
-        f"case_block_no_merge={bool(changed_block) and not changed_merged} "
-        f"case_block_and_merge={bool(changed_block) and bool(changed_merged)} "
-        f"case_merge_without_block={not changed_block and bool(changed_merged)} "
-        f"merged={changed_merged} block={changed_block}",
-        flush=True,
-    )
-
-
-def log_phase(
-    label: str,
-    *,
-    cycle: int,
-    current_time: float,
-    mesh: Mesh | None = None,
-    mesh_vars: list[dict[str, torch.Tensor]] | None = None,
-    device: torch.device | None = None,
-    debug_memory: bool = False,
-    debug_memory_summary: bool = False,
-) -> None:
-    print(
-        f"[PHASE] {label}: cycle={cycle} time={current_time:.14e}",
-        flush=True,
-    )
-    if mesh is not None:
-        log_block_sync(f"{label}-block-state", cycle=cycle, current_time=current_time, mesh=mesh)
-    if debug_memory:
-        log_memory(
-            f"{label}-memory",
-            cycle=cycle,
-            current_time=current_time,
-            device=device,
-            mesh=mesh,
-            mesh_vars=mesh_vars,
-            include_summary=debug_memory_summary,
-        )
-
-
 def run_simulation(
     mesh: Mesh,
     eos,
@@ -756,9 +548,6 @@ def run_simulation(
     config_file: str,
     output_dir: str,
     basename: str,
-    device: torch.device,
-    debug_memory: bool = False,
-    debug_memory_summary: bool = False,
 ) -> tuple[list[dict[str, torch.Tensor]], float]:
     intg = mesh.module("block0.intg")
     intg.options.tlim(tlim)
@@ -767,79 +556,15 @@ def run_simulation(
     checkpoint_dir = Path(output_dir) / "restart_checkpoints"
 
     cycle = 0
-    before_merged_outputs = snapshot_outputs(output_dir, basename, include_block=False)
-    before_block_outputs = snapshot_outputs(output_dir, basename, include_block=True)
-    log_phase(
-        "before-initial-make_outputs",
-        cycle=cycle,
-        current_time=current_time,
-        mesh=mesh,
-        mesh_vars=mesh_vars,
-        device=device,
-        debug_memory=debug_memory,
-        debug_memory_summary=debug_memory_summary,
-    )
     mesh.make_outputs(mesh_vars, current_time)
-    log_phase(
-        "after-initial-make_outputs",
-        cycle=cycle,
-        current_time=current_time,
-        mesh=mesh,
-        mesh_vars=mesh_vars,
-        device=device,
-        debug_memory=debug_memory,
-        debug_memory_summary=debug_memory_summary,
-    )
-    after_merged_outputs = snapshot_outputs(output_dir, basename, include_block=False)
-    after_block_outputs = snapshot_outputs(output_dir, basename, include_block=True)
-    report_output_changes(
-        "after-make_outputs",
-        before_merged=before_merged_outputs,
-        after_merged=after_merged_outputs,
-        before_block=before_block_outputs,
-        after_block=after_block_outputs,
-        cycle=cycle,
-        current_time=current_time,
-    )
 
     next_rt_update_time = current_time
     heating_tendencies: list[torch.Tensor | None] = [None] * len(mesh.blocks)
 
     while not intg.stop(cycle, current_time):
         cycle += 1
-        log_phase(
-            "loop-start",
-            cycle=cycle,
-            current_time=current_time,
-            mesh=mesh,
-            mesh_vars=mesh_vars,
-            device=device,
-            debug_memory=debug_memory,
-            debug_memory_summary=debug_memory_summary,
-        )
-        log_block_sync("before-set_cycle", cycle=cycle, current_time=current_time, mesh=mesh)
         mesh.set_cycle(cycle)
-        log_block_sync("after-set_cycle", cycle=cycle, current_time=current_time, mesh=mesh)
-
-        log_phase(
-            "before-max_time_step",
-            cycle=cycle,
-            current_time=current_time,
-            mesh=mesh,
-            mesh_vars=mesh_vars,
-            device=device,
-            debug_memory=debug_memory,
-        )
         dt = mesh.max_time_step(mesh_vars)
-        log_phase(
-            "after-max_time_step",
-            cycle=cycle,
-            current_time=current_time,
-            mesh=mesh,
-            mesh_vars=mesh_vars,
-            device=device,
-            debug_memory=debug_memory,
-        )
         mesh.print_cycle_info(mesh_vars, current_time, dt)
 
         for block_vars, forcing, diagnostics in zip(mesh_vars, forcing_states, block_diagnostics):
@@ -848,15 +573,6 @@ def run_simulation(
             diagnostics.solar_forcing = solar_forcing.contiguous()
 
         if current_time >= next_rt_update_time:
-            log_phase(
-                "before-radiative-heating",
-                cycle=cycle,
-                current_time=current_time,
-                mesh=mesh,
-                mesh_vars=mesh_vars,
-                device=device,
-                debug_memory=debug_memory,
-            )
             heating_tendencies = []
             for block_vars, forcing, diagnostics in zip(mesh_vars, forcing_states, block_diagnostics):
                 heating_tendency, solar_zenith_angle, solar_forcing = compute_radiative_heating(block_vars, forcing, eos, current_time)
@@ -864,114 +580,27 @@ def run_simulation(
                 diagnostics.solar_zenith_angle = solar_zenith_angle.contiguous()
                 diagnostics.solar_forcing = solar_forcing.contiguous()
                 heating_tendencies.append(heating_tendency)
-            log_phase(
-                "after-radiative-heating",
-                cycle=cycle,
-                current_time=current_time,
-                mesh=mesh,
-                mesh_vars=mesh_vars,
-                device=device,
-                debug_memory=debug_memory,
-            )
             rt_update_cadence = forcing_states[0].rt_update_cadence if forcing_states else 0.0
             if rt_update_cadence <= 0.0:
                 next_rt_update_time = current_time
             else:
                 next_rt_update_time = current_time + rt_update_cadence
-        # print(heating_tendencies[0][:,:,10])
         for stage in range(len(intg.stages)):
-            log_phase(
-                f"before-forward-stage-{stage}",
-                cycle=cycle,
-                current_time=current_time,
-                mesh=mesh,
-                mesh_vars=mesh_vars,
-                device=device,
-                debug_memory=debug_memory,
-            )
             mesh.forward(mesh_vars, dt, stage)
-            log_phase(
-                f"after-forward-stage-{stage}",
-                cycle=cycle,
-                current_time=current_time,
-                mesh=mesh,
-                mesh_vars=mesh_vars,
-                device=device,
-                debug_memory=debug_memory,
-            )
             for block, block_vars, heating_tendency, forcing in zip(mesh.blocks, mesh_vars, heating_tendencies, forcing_states):
                 if heating_tendency is not None:
                     apply_tidal_forcing(block, block_vars, dt, heating_tendency, forcing, current_time)
-            log_phase(
-                f"after-forcing-stage-{stage}",
-                cycle=cycle,
-                current_time=current_time,
-                mesh=mesh,
-                mesh_vars=mesh_vars,
-                device=device,
-                debug_memory=debug_memory,
-            )
 
         err = mesh.check_redo(mesh_vars)
-        if debug_memory and err != 0:
-            log_memory(
-                "after-check_redo",
-                cycle=cycle,
-                current_time=current_time,
-                device=device,
-                mesh=mesh,
-                mesh_vars=mesh_vars,
-                include_summary=debug_memory_summary,
-            )
         if err > 0:
             continue
         if err < 0:
             break
 
         current_time += dt
-        before_merged_outputs = snapshot_outputs(output_dir, basename, include_block=False)
-        before_block_outputs = snapshot_outputs(output_dir, basename, include_block=True)
-        log_phase(
-            "before-make_outputs",
-            cycle=cycle,
-            current_time=current_time,
-            mesh=mesh,
-            mesh_vars=mesh_vars,
-            device=device,
-            debug_memory=debug_memory,
-        )
         mesh.make_outputs(mesh_vars, current_time)
-        log_phase(
-            "after-make_outputs",
-            cycle=cycle,
-            current_time=current_time,
-            mesh=mesh,
-            mesh_vars=mesh_vars,
-            device=device,
-            debug_memory=debug_memory,
-        )
-        after_merged_outputs = snapshot_outputs(output_dir, basename, include_block=False)
-        after_block_outputs = snapshot_outputs(output_dir, basename, include_block=True)
-        report_output_changes(
-            "after-make_outputs",
-            before_merged=before_merged_outputs,
-            after_merged=after_merged_outputs,
-            before_block=before_block_outputs,
-            after_block=after_block_outputs,
-            cycle=cycle,
-            current_time=current_time,
-        )
 
         while current_time >= next_checkpoint_day * SECONDS_PER_DAY:
-            log_phase(
-                "before-write_restart_manifest",
-                cycle=cycle,
-                current_time=current_time,
-                mesh=mesh,
-                mesh_vars=mesh_vars,
-                device=device,
-                debug_memory=debug_memory,
-            )
             write_restart_manifest(
                 checkpoint_dir=checkpoint_dir,
                 checkpoint_day=next_checkpoint_day,
@@ -979,15 +608,6 @@ def run_simulation(
                 config_file=config_file,
                 output_dir=output_dir,
                 basename=basename,
-            )
-            log_phase(
-                "after-write_restart_manifest",
-                cycle=cycle,
-                current_time=current_time,
-                mesh=mesh,
-                mesh_vars=mesh_vars,
-                device=device,
-                debug_memory=debug_memory,
             )
             next_checkpoint_day += 10
 
@@ -998,16 +618,6 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run Uranus simulation.")
     p.add_argument("-c", "--config", required=True, help="YAML configuration file")
     p.add_argument("--output-dir", default="/home/chengcli/data", help="Output directory")
-    p.add_argument(
-        "--debug-memory",
-        action="store_true",
-        help="Print rank-aware CPU/GPU memory diagnostics at major simulation phases",
-    )
-    p.add_argument(
-        "--debug-memory-summary",
-        action="store_true",
-        help="Also print full torch.cuda.memory_summary() output with each memory diagnostic",
-    )
     p.add_argument(
         "--restart-name",
         default="",
@@ -1021,7 +631,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    print(args)
     config = apply_snapy_top_sponge(load_config(args.config))
 
     mesh, eos, device = create_models(args.config, config, args.output_dir)
@@ -1031,11 +640,6 @@ def main() -> None:
         mesh_vars, current_time = mesh.initialize_from_restart(args.restart_name)
     else:
         mesh_vars, current_time = initialize_isothermal(mesh, eos, config)
-
-    for i, block_vars in enumerate(mesh_vars):
-        for key, data in block_vars.items():
-            if isinstance(data, torch.Tensor):
-                print(f"block[{i}] {key}: shape={tuple(data.shape)} dtype={data.dtype} device={data.device}")
 
     forcing_states = [build_tidal_forcing_state(block, config, device, eos, model) for block in mesh.blocks]
     block_diagnostics = [initialize_block_diagnostics(block) for block in mesh.blocks]
@@ -1055,46 +659,9 @@ def main() -> None:
         config_file=args.config,
         output_dir=args.output_dir,
         basename=basename,
-        device=device,
-        debug_memory=args.debug_memory,
-        debug_memory_summary=args.debug_memory_summary,
     )
 
-    final_cycle = int(mesh.blocks[0].cycle()) if mesh.blocks else -1
-    before_merged_outputs = snapshot_outputs(args.output_dir, basename, include_block=False)
-    before_block_outputs = snapshot_outputs(args.output_dir, basename, include_block=True)
-    log_phase(
-        "before-finalize",
-        cycle=final_cycle,
-        current_time=current_time,
-        mesh=mesh,
-        mesh_vars=mesh_vars,
-        device=device,
-        debug_memory=args.debug_memory,
-        debug_memory_summary=args.debug_memory_summary,
-    )
     mesh.finalize(mesh_vars, current_time)
-    log_phase(
-        "after-finalize",
-        cycle=final_cycle,
-        current_time=current_time,
-        mesh=mesh,
-        mesh_vars=mesh_vars,
-        device=device,
-        debug_memory=args.debug_memory,
-        debug_memory_summary=args.debug_memory_summary,
-    )
-    after_merged_outputs = snapshot_outputs(args.output_dir, basename, include_block=False)
-    after_block_outputs = snapshot_outputs(args.output_dir, basename, include_block=True)
-    report_output_changes(
-        "after-finalize",
-        before_merged=before_merged_outputs,
-        after_merged=after_merged_outputs,
-        before_block=before_block_outputs,
-        after_block=after_block_outputs,
-        cycle=final_cycle,
-        current_time=current_time,
-    )
 
 
 if __name__ == "__main__":
