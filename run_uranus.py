@@ -30,8 +30,6 @@ class ForcingState:
     heatsf: float
     model: torch.jit.ScriptModule
     syear: float
-    top_depth: int
-    bottom_depth: int
     gas_constant: float
     mask: torch.Tensor
     basepress: torch.Tensor
@@ -45,6 +43,8 @@ class ForcingState:
     rotation_rate: float
     rt_update_cadence: float
     tidal_heating_decay_tau: float
+    batch_rt_inference: bool
+    rt_inference_chunk_size: int
 
 
 @dataclass
@@ -333,8 +333,6 @@ def build_tidal_forcing_state(
         heatsf=float(problem["heatsf"]),
         model=model,
         syear=float(problem["syear"]),
-        top_depth=int(problem.get("forcing_depth_top", 1)),
-        bottom_depth=int(problem.get("forcing_depth_bottom", 1)),
         gas_constant=eos_gas_constant(eos),
         mask=mask,
         basepress=basepress,
@@ -348,6 +346,8 @@ def build_tidal_forcing_state(
         rotation_rate=float(coriolis.get("omega1", 0.0)),
         rt_update_cadence=float(problem.get("rt_update_cadence", 1.0e4)),
         tidal_heating_decay_tau=float(problem.get("tidal_heating_decay_tau", 5.0e5)),
+        batch_rt_inference=bool(problem.get("batch_rt_inference", False)),
+        rt_inference_chunk_size=int(problem.get("rt_inference_chunk_size", 0)),
     )
 
 
@@ -377,22 +377,58 @@ def register_user_output(block: snapy.MeshBlock, diagnostics: BlockDiagnostics) 
     set_output(user_output)
 
 
+def update_block_diagnostics(
+    block_diagnostics: list[BlockDiagnostics],
+    rt_results: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+) -> list[torch.Tensor]:
+    heating_tendencies: list[torch.Tensor] = []
+    for diagnostics, (heating_tendency, solar_zenith_angle, solar_forcing) in zip(block_diagnostics, rt_results):
+        diagnostics.heating_tendency = heating_tendency
+        diagnostics.solar_zenith_angle = solar_zenith_angle
+        diagnostics.solar_forcing = solar_forcing
+        heating_tendencies.append(heating_tendency)
+    return heating_tendencies
+
+
+def tidal_heating_scale(forcing_states: list[ForcingState], current_time: float, dt: float) -> float:
+    if not forcing_states:
+        return dt
+
+    tau = forcing_states[0].tidal_heating_decay_tau
+    if tau > 0.0 and current_time < 50.0 * tau:
+        return (1.0 + 1.0e6 * math.exp(-current_time / tau)) * dt
+    return dt
+
+
 def apply_tidal_forcing(
     block: snapy.MeshBlock,
     block_vars: dict[str, torch.Tensor],
-    dt: float,
     heating_tendency: torch.Tensor,
-    forcing: ForcingState,
-    current_time: float,
+    heating_scale: float,
 ) -> None:
     hydro_u = block_vars["hydro_u"]
-    tau = forcing.tidal_heating_decay_tau
-    if tau > 0.0 and current_time < 50.0 * tau:
-        hydro_u[kIPR] += (1 + 1e6 * math.exp(-current_time / tau)) * heating_tendency * dt
-    else:
-        hydro_u[kIPR] += heating_tendency * dt
-
+    hydro_u[kIPR] += heating_tendency * heating_scale
     block.apply_hydro_bc(hydro_u, type=kConserved)
+
+
+def run_radiative_model(
+    model: torch.jit.ScriptModule,
+    regridtemp: torch.Tensor,
+    global_features: torch.Tensor,
+    mask: torch.Tensor,
+    chunk_size: int,
+) -> torch.Tensor:
+    regridtemp = regridtemp.to(torch.float32)
+    global_features = global_features.to(torch.float32)
+
+    if chunk_size <= 0 or regridtemp.shape[0] <= chunk_size:
+        return model(regridtemp, global_features, mask)
+
+    outputs: list[torch.Tensor] = []
+    for start in range(0, regridtemp.shape[0], chunk_size):
+        stop = min(start + chunk_size, regridtemp.shape[0])
+        outputs.append(model(regridtemp[start:stop], global_features[start:stop], mask[start:stop]))
+    return torch.cat(outputs, dim=0)
 
 
 def compute_radiative_heating_batched(
@@ -453,10 +489,13 @@ def compute_radiative_heating_batched(
             solar_forcings.append(solar_forcing)
 
         model = forcing_states[0].model
-        output = model(
-            torch.cat(regridded_temps, dim=0).to(torch.float32),
-            torch.cat(global_feature_batches, dim=0).to(torch.float32),
+        chunk_size = forcing_states[0].rt_inference_chunk_size
+        output = run_radiative_model(
+            model,
+            torch.cat(regridded_temps, dim=0),
+            torch.cat(global_feature_batches, dim=0),
             torch.cat(mask_batches, dim=0),
+            chunk_size,
         )
 
         results: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
@@ -485,6 +524,75 @@ def compute_radiative_heating_batched(
             )
 
         return results
+
+
+def compute_radiative_heating_per_block(
+    mesh_vars: list[dict[str, torch.Tensor]],
+    forcing_states: list[ForcingState],
+    eos,
+    current_time: float,
+) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    results: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
+
+    with torch.inference_mode():
+        for block_vars, forcing in zip(mesh_vars, forcing_states):
+            hydro_u = block_vars["hydro_u"]
+            hydro_w = eos.compute("U->W", [hydro_u])
+            temperature = eos.compute("W->T", [hydro_w])
+
+            nx3, nx2, nz = hydro_w[kIPR].shape
+            batch = nx2 * nx3
+
+            pressbatch = hydro_w[kIPR].reshape(batch, nz)
+            tempbatch = temperature.reshape(batch, nz)
+            regridtemp = regrid_tensor(pressbatch, tempbatch, forcing.basepress, forcing.tempmean, forcing.tempstd)
+
+            global_features, solar_zenith_angle, solar_forcing, _ = calcglobal(
+                forcing.lon,
+                forcing.lat,
+                forcing.sinlat,
+                forcing.coslat,
+                current_time,
+                forcing.fluxmean,
+                forcing.fluxstd,
+                forcing.umumean,
+                forcing.umustd,
+                forcing.syear,
+                forcing.stellar_flux_nadir,
+                forcing.substellar_lon,
+                forcing.substellar_lat,
+                forcing.rotation_rate,
+            )
+
+            output = run_radiative_model(
+                forcing.model,
+                regridtemp,
+                global_features.reshape(batch, 2),
+                forcing.mask,
+                forcing.rt_inference_chunk_size,
+            )
+            heating = degrid(forcing.basepress, output, pressbatch, forcing.heatthr, forcing.heatsf).reshape(nx3, nx2, nz)
+            heating_tendency = forcing.gas_constant * hydro_w[kIDN] * heating
+            results.append(
+                (
+                    heating_tendency,
+                    solar_zenith_angle.reshape(nx3, nx2, 1).expand(nx3, nx2, nz),
+                    solar_forcing.reshape(nx3, nx2, 1).expand(nx3, nx2, nz),
+                )
+            )
+
+    return results
+
+
+def compute_radiative_heating_all_blocks(
+    mesh_vars: list[dict[str, torch.Tensor]],
+    forcing_states: list[ForcingState],
+    eos,
+    current_time: float,
+) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    if forcing_states and (forcing_states[0].batch_rt_inference or forcing_states[0].rt_inference_chunk_size > 0):
+        return compute_radiative_heating_batched(mesh_vars, forcing_states, eos, current_time)
+    return compute_radiative_heating_per_block(mesh_vars, forcing_states, eos, current_time)
 
 
 def write_restart_manifest(
@@ -532,6 +640,7 @@ def run_simulation(
     config_file: str,
     output_dir: str,
     basename: str,
+    log_cycle_interval: int,
 ) -> tuple[list[dict[str, torch.Tensor]], float]:
     intg = mesh.module("block0.intg")
     intg.options.tlim(tlim)
@@ -544,13 +653,8 @@ def run_simulation(
     heating_tendencies: list[torch.Tensor | None] = [None] * len(mesh.blocks)
 
     if forcing_states:
-        rt_results = compute_radiative_heating_batched(mesh_vars, forcing_states, eos, current_time)
-        heating_tendencies = []
-        for diagnostics, (heating_tendency, solar_zenith_angle, solar_forcing) in zip(block_diagnostics, rt_results):
-            diagnostics.heating_tendency = heating_tendency.contiguous()
-            diagnostics.solar_zenith_angle = solar_zenith_angle.contiguous()
-            diagnostics.solar_forcing = solar_forcing.contiguous()
-            heating_tendencies.append(heating_tendency)
+        rt_results = compute_radiative_heating_all_blocks(mesh_vars, forcing_states, eos, current_time)
+        heating_tendencies = update_block_diagnostics(block_diagnostics, rt_results)
         rt_update_cadence = forcing_states[0].rt_update_cadence
         next_rt_update_time = current_time if rt_update_cadence <= 0.0 else current_time + rt_update_cadence
 
@@ -560,26 +664,25 @@ def run_simulation(
         cycle += 1
         mesh.set_cycle(cycle)
         dt = mesh.max_time_step(mesh_vars)
-        mesh.print_cycle_info(mesh_vars, current_time, dt)
+        if log_cycle_interval > 0 and cycle % log_cycle_interval == 0:
+            mesh.print_cycle_info(mesh_vars, current_time, dt)
 
         if forcing_states and current_time >= next_rt_update_time:
-            rt_results = compute_radiative_heating_batched(mesh_vars, forcing_states, eos, current_time)
-            heating_tendencies = []
-            for diagnostics, (heating_tendency, solar_zenith_angle, solar_forcing) in zip(block_diagnostics, rt_results):
-                diagnostics.heating_tendency = heating_tendency.contiguous()
-                diagnostics.solar_zenith_angle = solar_zenith_angle.contiguous()
-                diagnostics.solar_forcing = solar_forcing.contiguous()
-                heating_tendencies.append(heating_tendency)
+            rt_results = compute_radiative_heating_all_blocks(mesh_vars, forcing_states, eos, current_time)
+            heating_tendencies = update_block_diagnostics(block_diagnostics, rt_results)
             rt_update_cadence = forcing_states[0].rt_update_cadence if forcing_states else 0.0
             if rt_update_cadence <= 0.0:
                 next_rt_update_time = current_time
             else:
                 next_rt_update_time = current_time + rt_update_cadence
+        # The heating tendency is a per-second source. Apply one step's worth
+        # across the RK stages instead of applying a full dt at every stage.
+        heating_scale = tidal_heating_scale(forcing_states, current_time, dt) / len(intg.stages)
         for stage in range(len(intg.stages)):
             mesh.forward(mesh_vars, dt, stage)
-            for block, block_vars, heating_tendency, forcing in zip(mesh.blocks, mesh_vars, heating_tendencies, forcing_states):
+            for block, block_vars, heating_tendency in zip(mesh.blocks, mesh_vars, heating_tendencies):
                 if heating_tendency is not None:
-                    apply_tidal_forcing(block, block_vars, dt, heating_tendency, forcing, current_time)
+                    apply_tidal_forcing(block, block_vars, heating_tendency, heating_scale)
 
         err = mesh.check_redo(mesh_vars)
         if err > 0:
@@ -637,6 +740,7 @@ def main() -> None:
         register_user_output(block, diagnostics)
 
     tlim = float(config["integration"]["tlim"])
+    log_cycle_interval = int(config.get("problem", {}).get("log_cycle_interval", config["integration"].get("ncycle_out", 1)))
     basename = Path(args.config).stem
     mesh_vars, current_time = run_simulation(
         mesh=mesh,
@@ -649,6 +753,7 @@ def main() -> None:
         config_file=args.config,
         output_dir=args.output_dir,
         basename=basename,
+        log_cycle_interval=log_cycle_interval,
     )
 
     mesh.finalize(mesh_vars, current_time)

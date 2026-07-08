@@ -4,6 +4,12 @@ This workspace contains the Uranus driver [`run_uranus.py`](/home/chengcli/scix/
 
 ## Requirements
 
+- Activate the project environment before running checks or simulations:
+
+  ```bash
+  source ~/kevinsh/env311/bin/activate
+  ```
+
 - Python environment with `torch`, `yaml`, and `snapy` available
 - `torchrun` on `PATH`
 - For GPU runs: at least one CUDA-capable GPU visible to PyTorch
