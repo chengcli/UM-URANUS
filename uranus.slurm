@@ -36,7 +36,7 @@ echo "NODELIST=${SLURM_JOB_NODELIST}"
 # export NCCL_SOCKET_IFNAME=ib0            # or eno1/bond0/etc
 # export GLOO_SOCKET_IFNAME=ib0
 
-# ---- Launch one torchrun per node; torchrun spawns 2 procs on that node ----
+# ---- Launch one torchrun per node; torchrun spawns one proc per GPU on that node ----
 srun --nodes=${NNODES} --ntasks=${NNODES} --ntasks-per-node=1 \
   singularity exec --nv "${SIF}" bash -lc '
     set -euo pipefail
@@ -46,8 +46,6 @@ srun --nodes=${NNODES} --ntasks=${NNODES} --ntasks-per-node=1 \
 
     source /opt/venv/bin/activate
 
-    pip install snapy==2.1.4
-
     torchrun \
       --nnodes='"${NNODES}"' \
       --nproc_per_node='"${GPUS_PER_NODE}"' \
@@ -55,6 +53,6 @@ srun --nodes=${NNODES} --ntasks=${NNODES} --ntasks-per-node=1 \
       --master_addr='"${MASTER_ADDR}"' \
       --master_port='"${MASTER_PORT}"' \
       ./run_uranus.py \
-        --config=./uranus_smoke_gpu.yaml \
-        --output-dir=./output
+        --config=./uranus_gpu.yaml \
+        --output-dir=./outputsuranusgpu
   '

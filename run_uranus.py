@@ -7,7 +7,6 @@ import argparse
 import glob
 import math
 import os
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 # import numpy
@@ -38,6 +37,8 @@ class ForcingState:
     basepress: torch.Tensor
     lon: torch.Tensor
     lat: torch.Tensor
+    sinlat: torch.Tensor
+    coslat: torch.Tensor
     stellar_flux_nadir: float
     substellar_lon: float
     substellar_lat: float
@@ -87,15 +88,9 @@ def torch_denormalize_symlog(x: torch.Tensor, thr: float, sf: float) -> torch.Te
     unscaled = x * sf
     abs_unscaled = torch.abs(unscaled)
 
-    linear_mask = abs_unscaled <= 1.0
-    y = torch.zeros_like(x)
-    y[linear_mask] = unscaled[linear_mask] * thr
-
-    log_mask = ~linear_mask
-    if log_mask.any():
-        y[log_mask] = torch.sign(unscaled[log_mask]) * thr * 10 ** (abs_unscaled[log_mask] - 1.0)
-
-    return y
+    linear = unscaled * thr
+    log = torch.sign(unscaled) * thr * torch.pow(x.new_tensor(10.0), abs_unscaled - 1.0)
+    return torch.where(abs_unscaled <= 1.0, linear, log)
 
 
 def degrid(x: torch.Tensor, normy: torch.Tensor, xq: torch.Tensor, heatthr: float, heatsf: float) -> torch.Tensor:
@@ -133,6 +128,8 @@ def normalize_standard(x: torch.Tensor, mean: float, std: float) -> torch.Tensor
 def calcglobal(
     lon: torch.Tensor,
     lat: torch.Tensor,
+    sinlat: torch.Tensor,
+    coslat: torch.Tensor,
     current_time: float,
     fluxmean: float,
     fluxstd: float,
@@ -146,24 +143,22 @@ def calcglobal(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     pi = torch.pi
     ls = (current_time % (2 * syear)) * 2 * pi / syear
-    obliquity = torch.tensor(97.77 * pi / 180.0, dtype=lat.dtype, device=lat.device)
-    seasonal_declination = torch.asin(torch.sin(obliquity) * torch.sin(torch.tensor(ls, dtype=lat.dtype, device=lat.device)))
+    obliquity = lat.new_tensor(97.77 * pi / 180.0)
+    seasonal_declination = torch.asin(torch.sin(obliquity) * torch.sin(lat.new_tensor(ls)))
     subsolar_lat = torch.clamp(
-        torch.tensor(substellar_lat, dtype=lat.dtype, device=lat.device) + seasonal_declination,
+        lat.new_tensor(substellar_lat) + seasonal_declination,
         -0.5 * pi,
         0.5 * pi,
     )
     rotating_subsolar_lon = substellar_lon - rotation_rate * current_time
     subsolar_lon = torch.remainder(
-        torch.tensor(rotating_subsolar_lon, dtype=lon.dtype, device=lon.device),
+        lon.new_tensor(rotating_subsolar_lon),
         2.0 * pi,
     )
     hour_angle = torch.atan2(torch.sin(lon - subsolar_lon), torch.cos(lon - subsolar_lon))
 
     sin_subsolar_lat = torch.sin(subsolar_lat)
     cos_subsolar_lat = torch.cos(subsolar_lat)
-    sinlat = torch.sin(lat)
-    coslat = torch.cos(lat)
     cos_zenith = sinlat * sin_subsolar_lat + coslat * cos_subsolar_lat * torch.cos(hour_angle)
     cos_zenith = torch.clamp(cos_zenith, -1.0, 1.0)
     day_side_cos_zenith = torch.clamp(cos_zenith, min=0.0)
@@ -190,25 +185,6 @@ def resolve_config_relative_path(config_file: str, raw_path: str) -> Path:
     return Path(config_file).resolve().parent / candidate
 
 
-def apply_snapy_top_sponge(config: dict) -> dict:
-    forcing = config.setdefault("forcing", {})
-    problem = config.get("problem", {})
-
-    tau = problem.get("sponge_tau")
-    width = problem.get("spongeheight")
-    if tau is None or width is None:
-        return config
-
-    forcing.setdefault(
-        "top-sponge-lyr",
-        {
-            "tau": float(tau),
-            "width": float(width),
-        },
-    )
-    return config
-
-
 def select_device(block: snapy.MeshBlock) -> torch.device:
     backend = block.options.layout().backend()
     if backend == "gloo":
@@ -224,26 +200,9 @@ def eos_gas_constant(eos) -> float:
     return cv * (gamma - 1.0)
 
 
-def create_models(config_file: str, config: dict, output_dir: str | None = None):
+def create_models(config_file: str, output_dir: str | None = None):
     config_stem = Path(config_file).stem
-    config_dir = Path(config_file).resolve().parent
-    temp_config_path: str | None = None
-    with tempfile.NamedTemporaryFile(
-        "w",
-        suffix=".yaml",
-        prefix="uranus_snapy_",
-        dir=config_dir,
-        delete=False,
-        encoding="utf-8",
-    ) as f:
-        yaml.safe_dump(config, f, sort_keys=False)
-        temp_config_path = f.name
-
-    try:
-        op = MeshOptions.from_yaml(temp_config_path)
-    finally:
-        if temp_config_path and os.path.exists(temp_config_path):
-            os.unlink(temp_config_path)
+    op = MeshOptions.from_yaml(config_file)
 
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
@@ -253,7 +212,7 @@ def create_models(config_file: str, config: dict, output_dir: str | None = None)
         else:
             print(
                 f"[WARN] snapy MeshBlockOptions.file_basename() is unavailable; "
-                f"using snapy default output basename instead of {config_stem}",
+                f"using snapy default output basename from {config_file}",
                 flush=True,
             )
 
@@ -381,6 +340,8 @@ def build_tidal_forcing_state(
         basepress=basepress,
         lon=lon.to(device),
         lat=lat.to(device),
+        sinlat=torch.sin(lat).to(device),
+        coslat=torch.cos(lat).to(device),
         stellar_flux_nadir=float(problem["stellar_flux_nadir"]),
         substellar_lon=float(problem.get("substellar_lon_deg", 0.0) * math.pi / 180.0),
         substellar_lat=float(problem.get("substellar_lat_deg", 0.0) * math.pi / 180.0),
@@ -434,73 +395,96 @@ def apply_tidal_forcing(
     block.apply_hydro_bc(hydro_u, type=kConserved)
 
 
-def compute_radiative_heating(
-    block_vars: dict[str, torch.Tensor],
-    forcing: ForcingState,
+def compute_radiative_heating_batched(
+    mesh_vars: list[dict[str, torch.Tensor]],
+    forcing_states: list[ForcingState],
     eos,
     current_time: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    if not mesh_vars:
+        return []
+
     with torch.inference_mode():
-        hydro_u = block_vars["hydro_u"]
-        hydro_w = eos.compute("U->W", [hydro_u])
-        temperature = eos.compute("W->T", [hydro_w])
+        regridded_temps: list[torch.Tensor] = []
+        global_feature_batches: list[torch.Tensor] = []
+        mask_batches: list[torch.Tensor] = []
+        hydro_ws: list[torch.Tensor] = []
+        pressbatches: list[torch.Tensor] = []
+        block_shapes: list[tuple[int, int, int]] = []
+        solar_zenith_angles: list[torch.Tensor] = []
+        solar_forcings: list[torch.Tensor] = []
 
-        nx3, nx2, nz = hydro_w[kIPR].shape
-        batch = nx2 * nx3
+        for block_vars, forcing in zip(mesh_vars, forcing_states):
+            hydro_u = block_vars["hydro_u"]
+            hydro_w = eos.compute("U->W", [hydro_u])
+            temperature = eos.compute("W->T", [hydro_w])
 
-        pressbatch = hydro_w[kIPR].reshape(batch, nz)
-        tempbatch = temperature.reshape(batch, nz)
-        regridtemp = regrid_tensor(pressbatch, tempbatch, forcing.basepress, forcing.tempmean, forcing.tempstd)
+            nx3, nx2, nz = hydro_w[kIPR].shape
+            batch = nx2 * nx3
 
-        global_features, solar_zenith_angle, solar_forcing, _ = calcglobal(
-            forcing.lon,
-            forcing.lat,
-            current_time,
-            forcing.fluxmean,
-            forcing.fluxstd,
-            forcing.umumean,
-            forcing.umustd,
-            forcing.syear,
-            forcing.stellar_flux_nadir,
-            forcing.substellar_lon,
-            forcing.substellar_lat,
-            forcing.rotation_rate,
+            pressbatch = hydro_w[kIPR].reshape(batch, nz)
+            tempbatch = temperature.reshape(batch, nz)
+            regridtemp = regrid_tensor(pressbatch, tempbatch, forcing.basepress, forcing.tempmean, forcing.tempstd)
+
+            global_features, solar_zenith_angle, solar_forcing, _ = calcglobal(
+                forcing.lon,
+                forcing.lat,
+                forcing.sinlat,
+                forcing.coslat,
+                current_time,
+                forcing.fluxmean,
+                forcing.fluxstd,
+                forcing.umumean,
+                forcing.umustd,
+                forcing.syear,
+                forcing.stellar_flux_nadir,
+                forcing.substellar_lon,
+                forcing.substellar_lat,
+                forcing.rotation_rate,
+            )
+
+            regridded_temps.append(regridtemp)
+            global_feature_batches.append(global_features.reshape(batch, 2))
+            mask_batches.append(forcing.mask)
+            hydro_ws.append(hydro_w)
+            pressbatches.append(pressbatch)
+            block_shapes.append((nx3, nx2, nz))
+            solar_zenith_angles.append(solar_zenith_angle)
+            solar_forcings.append(solar_forcing)
+
+        model = forcing_states[0].model
+        output = model(
+            torch.cat(regridded_temps, dim=0).to(torch.float32),
+            torch.cat(global_feature_batches, dim=0).to(torch.float32),
+            torch.cat(mask_batches, dim=0),
         )
-        global_features = global_features.reshape(batch, 2)
-        solar_zenith_angle = solar_zenith_angle.reshape(nx3, nx2, 1).expand(nx3, nx2, nz)
-        solar_forcing = solar_forcing.reshape(nx3, nx2, 1).expand(nx3, nx2, nz)
-        output = forcing.model(regridtemp.to(torch.float32), global_features.to(torch.float32), forcing.mask)
-        heating = degrid(forcing.basepress, output, pressbatch, forcing.heatthr, forcing.heatsf).reshape(nx3, nx2, nz)
-        heating_tendency = forcing.gas_constant * hydro_w[kIDN] * heating
-        return heating_tendency, solar_zenith_angle, solar_forcing
 
+        results: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
+        offset = 0
+        for forcing, hydro_w, pressbatch, shape, solar_zenith_angle, solar_forcing in zip(
+            forcing_states,
+            hydro_ws,
+            pressbatches,
+            block_shapes,
+            solar_zenith_angles,
+            solar_forcings,
+        ):
+            nx3, nx2, nz = shape
+            batch = nx2 * nx3
+            block_output = output[offset : offset + batch]
+            offset += batch
 
-def compute_solar_diagnostics(
-    block_vars: dict[str, torch.Tensor],
-    forcing: ForcingState,
-    current_time: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    hydro_u = block_vars["hydro_u"]
-    nx3, nx2, nz = hydro_u[kIPR].shape
+            heating = degrid(forcing.basepress, block_output, pressbatch, forcing.heatthr, forcing.heatsf).reshape(nx3, nx2, nz)
+            heating_tendency = forcing.gas_constant * hydro_w[kIDN] * heating
+            results.append(
+                (
+                    heating_tendency,
+                    solar_zenith_angle.reshape(nx3, nx2, 1).expand(nx3, nx2, nz),
+                    solar_forcing.reshape(nx3, nx2, 1).expand(nx3, nx2, nz),
+                )
+            )
 
-    _, solar_zenith_angle, solar_forcing, _ = calcglobal(
-        forcing.lon,
-        forcing.lat,
-        current_time,
-        forcing.fluxmean,
-        forcing.fluxstd,
-        forcing.umumean,
-        forcing.umustd,
-        forcing.syear,
-        forcing.stellar_flux_nadir,
-        forcing.substellar_lon,
-        forcing.substellar_lat,
-        forcing.rotation_rate,
-    )
-
-    solar_zenith_angle = solar_zenith_angle.reshape(nx3, nx2, 1).expand(nx3, nx2, nz)
-    solar_forcing = solar_forcing.reshape(nx3, nx2, 1).expand(nx3, nx2, nz)
-    return solar_zenith_angle, solar_forcing
+        return results
 
 
 def write_restart_manifest(
@@ -556,10 +540,21 @@ def run_simulation(
     checkpoint_dir = Path(output_dir) / "restart_checkpoints"
 
     cycle = 0
-    mesh.make_outputs(mesh_vars, current_time)
-
     next_rt_update_time = current_time
     heating_tendencies: list[torch.Tensor | None] = [None] * len(mesh.blocks)
+
+    if forcing_states:
+        rt_results = compute_radiative_heating_batched(mesh_vars, forcing_states, eos, current_time)
+        heating_tendencies = []
+        for diagnostics, (heating_tendency, solar_zenith_angle, solar_forcing) in zip(block_diagnostics, rt_results):
+            diagnostics.heating_tendency = heating_tendency.contiguous()
+            diagnostics.solar_zenith_angle = solar_zenith_angle.contiguous()
+            diagnostics.solar_forcing = solar_forcing.contiguous()
+            heating_tendencies.append(heating_tendency)
+        rt_update_cadence = forcing_states[0].rt_update_cadence
+        next_rt_update_time = current_time if rt_update_cadence <= 0.0 else current_time + rt_update_cadence
+
+    mesh.make_outputs(mesh_vars, current_time)
 
     while not intg.stop(cycle, current_time):
         cycle += 1
@@ -567,15 +562,10 @@ def run_simulation(
         dt = mesh.max_time_step(mesh_vars)
         mesh.print_cycle_info(mesh_vars, current_time, dt)
 
-        for block_vars, forcing, diagnostics in zip(mesh_vars, forcing_states, block_diagnostics):
-            solar_zenith_angle, solar_forcing = compute_solar_diagnostics(block_vars, forcing, current_time)
-            diagnostics.solar_zenith_angle = solar_zenith_angle.contiguous()
-            diagnostics.solar_forcing = solar_forcing.contiguous()
-
-        if current_time >= next_rt_update_time:
+        if forcing_states and current_time >= next_rt_update_time:
+            rt_results = compute_radiative_heating_batched(mesh_vars, forcing_states, eos, current_time)
             heating_tendencies = []
-            for block_vars, forcing, diagnostics in zip(mesh_vars, forcing_states, block_diagnostics):
-                heating_tendency, solar_zenith_angle, solar_forcing = compute_radiative_heating(block_vars, forcing, eos, current_time)
+            for diagnostics, (heating_tendency, solar_zenith_angle, solar_forcing) in zip(block_diagnostics, rt_results):
                 diagnostics.heating_tendency = heating_tendency.contiguous()
                 diagnostics.solar_zenith_angle = solar_zenith_angle.contiguous()
                 diagnostics.solar_forcing = solar_forcing.contiguous()
@@ -631,9 +621,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    config = apply_snapy_top_sponge(load_config(args.config))
+    config = load_config(args.config)
 
-    mesh, eos, device = create_models(args.config, config, args.output_dir)
+    mesh, eos, device = create_models(args.config, args.output_dir)
     model = load_radiative_model(args.config, config, device)
 
     if args.restart_name:

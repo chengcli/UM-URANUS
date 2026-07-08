@@ -58,15 +58,15 @@ This exercises:
 - neural heating evaluation
 - restart and NetCDF output paths
 
-## Single-GPU NCCL Smoke Test
+## Single-GPU NCCL RT Test
 
-A reduced NCCL smoke case can be run on one GPU with 6 blocks per process:
+The RT GPU case can be run on one GPU with 6 cubed-sphere blocks per process:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 torchrun --nproc-per-node=1 \
   /home/chengcli/scix/workspace/UM-URANUS/run_uranus.py \
-  -c /home/chengcli/scix/workspace/UM-URANUS/uranus_smoke_gpu.yaml \
-  --output-dir /home/chengcli/scix/workspace/UM-URANUS/smoke_output_gpu
+  -c /home/chengcli/scix/workspace/UM-URANUS/uranus_gpu.yaml \
+  --output-dir /home/chengcli/scix/workspace/UM-URANUS/outputsuranusgpu
 ```
 
 This should place all 6 local blocks on `cuda:0`.
