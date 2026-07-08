@@ -52,6 +52,7 @@ class BlockDiagnostics:
     solar_zenith_angle: torch.Tensor
     solar_forcing: torch.Tensor
     heating_tendency: torch.Tensor
+    gas_constant: float
 
 
 def regrid_tensor(x: torch.Tensor, y: torch.Tensor, xq: torch.Tensor, tempmean: float, tempstd: float) -> torch.Tensor:
@@ -362,12 +363,16 @@ def initialize_block_diagnostics(block: snapy.MeshBlock) -> BlockDiagnostics:
         solar_zenith_angle=torch.full(shape, 90.0, dtype=x1v.dtype, device=x1v.device),
         solar_forcing=zeros.clone(),
         heating_tendency=zeros.clone(),
+        gas_constant=eos_gas_constant(block.module("hydro.eos")),
     )
 
 
 def register_user_output(block: snapy.MeshBlock, diagnostics: BlockDiagnostics) -> None:
-    def user_output(_vars: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    def user_output(vars_: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        hydro_w = vars_["hydro_w"]
+        temperature = hydro_w[kIPR] / (diagnostics.gas_constant * hydro_w[kIDN])
         return {
+            "temp": temperature.contiguous(),
             "solar_zenith_angle": diagnostics.solar_zenith_angle.contiguous(),
             "solar_forcing": diagnostics.solar_forcing.contiguous(),
             "heating_tendency": diagnostics.heating_tendency.contiguous(),

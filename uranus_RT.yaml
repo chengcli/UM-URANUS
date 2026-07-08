@@ -68,6 +68,7 @@ outputs:
 forcing:
   const-gravity:
     grav1: -9.19
+    non-hydrostatic: 0.0
   coriolis:
     type: xyz
     omega1: 1.0119154e-4
