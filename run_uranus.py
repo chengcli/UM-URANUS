@@ -20,8 +20,8 @@ import snapy
 from snapy import Mesh, MeshOptions, kICY, kIPR, kIV1
 
 from opacity import CloudOpacity, GasOpacity
-from orbital import OrbitalForcing, OrbitalInsolation
-from rt_forcing import build_rt_state, compute_heating, mask_nightside_visible_flux
+from orbital import OrbitalForcing
+from rt_forcing import build_rt_state, compute_heating
 
 AU = 1.495978707e11
 
@@ -91,11 +91,6 @@ def ensure_torchscripts(
     return orbit_path
 
 
-def compile_orbit(config: dict[str, Any], device: torch.device) -> torch.nn.Module:
-    model = OrbitalInsolation(make_orbit(config["orbit"])).to(device).eval()
-    return torch.compile(model, fullgraph=True)
-
-
 def sync_primitives(variables: dict[str, torch.Tensor], eos: Any) -> None:
     variables["hydro_w"] = eos.compute("U->W", (variables["hydro_u"], variables["hydro_w"]))
 
@@ -117,7 +112,7 @@ def run(args: argparse.Namespace) -> None:
     device = torch.device(options.device_str())
     mesh.to(device)
     mesh.set_user_stage_forcings([str(orbit_path)])
-    orbit_insolation = compile_orbit(config, device)
+    orbit_insolation = torch.compile(make_orbit(config["orbit"]).to(device).eval().insolation, fullgraph=True)
     thermos = []
     for block in mesh.blocks:
         thermo_y = block.module("hydro.eos.thermo")
