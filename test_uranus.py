@@ -4,6 +4,7 @@ from pathlib import Path
 import torch
 import yaml
 import snapy
+import kintera
 from paddle import setup_profile
 
 from run_uranus import (
@@ -13,6 +14,7 @@ from run_uranus import (
     OrbitalForcing,
     ensure_torchscripts,
     mask_nightside_visible_flux,
+    molecular_weights,
 )
 
 
@@ -92,17 +94,44 @@ def test_high_obliquity_subsolar_longitude_uses_right_ascension():
     assert math.isclose(float(subsolar_lon), expected, abs_tol=1.0e-6)
 
 
-def test_builds_seven_reloadable_torchscripts(tmp_path):
+def test_builds_and_reuses_seven_torchscripts(tmp_path):
     config = yaml.safe_load((ROOT / "uranus.yaml").read_text())
     for opacity in config["opacities"].values():
         opacity["data"] = [str(tmp_path / Path(opacity["data"][0]).name)]
     config["orbit"]["data"] = str(tmp_path / "orbital_forcing.pt")
-    orbit = ensure_torchscripts(config, ROOT / "uranus.yaml", rebuild=True)
+    orbit = ensure_torchscripts(config, ROOT / "uranus.yaml", force_build=True)
     artifacts = sorted(tmp_path.glob("*.pt"))
     assert len(artifacts) == 7
+    assert not list(tmp_path.glob("*.sha256"))
     for artifact in artifacts:
         torch.jit.load(str(artifact))
     assert orbit == tmp_path / "orbital_forcing.pt"
+    scripted_gas = torch.jit.load(str(tmp_path / "gas_vis_opacity.pt"))
+    torch.testing.assert_close(
+        scripted_gas.molecular_weights,
+        torch.tensor(kintera.species_weights()[:3], dtype=torch.float64),
+    )
+
+    gas_path = tmp_path / "gas_vis_opacity.pt"
+    original = gas_path.read_bytes()
+    config["opacities"]["gas-vis"]["parameters"]["kappa_ref"] *= 2
+    ensure_torchscripts(config, ROOT / "uranus.yaml")
+    assert gas_path.read_bytes() == original
+
+    orbit.unlink()
+    ensure_torchscripts(config, ROOT / "uranus.yaml")
+    torch.jit.load(str(orbit))
+    assert gas_path.read_bytes() == original
+
+    ensure_torchscripts(config, ROOT / "uranus.yaml", force_build=True)
+    assert gas_path.read_bytes() != original
+    assert not list(tmp_path.glob("*.sha256"))
+
+
+def test_molecular_weights_come_from_kintera():
+    weights = molecular_weights(ROOT / "uranus.yaml")
+    assert weights == dict(zip(kintera.species_names(), kintera.species_weights(), strict=True))
+    assert math.isclose(weights["dry"], 0.0021123903)
 
 
 def test_production_configuration():
@@ -112,8 +141,10 @@ def test_production_configuration():
     assert config["forcing"]["bot-heat"]["flux"] == 0.042
     assert config["problem"]["Ps"] == 2.062e6
     assert len(config["opacities"]) == 6
+    assert Path(config["orbit"]["data"]).parent == Path(".")
+    assert all(Path(opacity["data"][0]).parent == Path(".") for opacity in config["opacities"].values())
     gas_species = {"dry", "CH4", "H2S"}
-    assert set(config["opacities"]["gas-visible"]["species"]) == gas_species
+    assert set(config["opacities"]["gas-vis"]["species"]) == gas_species
     assert set(config["opacities"]["gas-ir"]["species"]) == gas_species
     ir_band = next(band for band in config["bands"] if band["name"] == "ir")
     assert ir_band["flags"] == "planck"

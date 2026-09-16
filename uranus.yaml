@@ -1,50 +1,45 @@
 reference-state:
   Tref: 0.0
   Pref: 1.e5
+
 species:
-- name: dry
-  composition:
-    H: 1.5
-    He: 0.15
-  cv_R: 2.5
-- name: CH4
-  composition:
-    C: 1
-    H: 4
-  cv_R: 3.5
-  u0_R: 0.0
-- name: H2S
-  composition:
-    H: 2
-    S: 1
-  cv_R: 3.5
-  u0_R: 0.0
-- name: CH4(s)
-  composition:
-    C: 1
-    H: 4
-  cv_R: 4.5
-  u0_R: -980.0
-- name: CH4(s,p)
-  composition:
-    C: 1
-    H: 4
-  cv_R: 4.5
-  u0_R: -980.0
-- name: H2S(s)
-  composition:
-    H: 2
-    S: 1
-  cv_R: 4.5
-  u0_R: -2250.0
-- name: H2S(s,p)
-  composition:
-    H: 2
-    S: 1
-  cv_R: 4.5
-  u0_R: -2250.0
+  - name: dry
+    composition: {H: 1.5, He: 0.15}
+    cv_R: 2.5
+
+  - name: CH4
+    composition: {C: 1, H: 4}
+    cv_R: 3.5
+    u0_R: 0.0
+
+  - name: H2S
+    composition: {H: 2, S: 1}
+    cv_R: 3.5
+    u0_R: 0.0
+
+  - name: CH4(s)
+    composition: {C: 1, H: 4}
+    cv_R: 4.5
+    u0_R: -980.0
+
+  - name: CH4(s,p)
+    composition: {C: 1, H: 4}
+    cv_R: 4.5
+    u0_R: -980.0
+
+  - name: H2S(s)
+    composition: {H: 2, S: 1}
+    cv_R: 4.5
+    u0_R: -2250.0
+
+  - name: H2S(s,p)
+    composition: {H: 2, S: 1}
+    cv_R: 4.5
+    u0_R: -2250.0
+
 geometry:
   type: gnomonic-equiangle
+
   bounds:
     x1min: 2.5559e7
     x1max: 2.58007e7
@@ -52,18 +47,20 @@ geometry:
     x2max_pi: 0.25
     x3min_pi: -0.25
     x3max_pi: 0.25
+
   cells:
     nx1: 64
     nx2: 96
     nx3: 96
     nghost: 3
+
 distribute:
-  backend: nccl
   layout: cubed-sphere
   blocks_per_process: 3
   nb2: 1
   nb3: 1
   verbose: false
+
 dynamics:
   equation-of-state:
     type: ideal-moist
@@ -73,20 +70,14 @@ dynamics:
     limiter: true
     max-iter: 30
     ftol: 1.0e-06
-  vertical-projection:
-    type: temperature
-    pressure-margin: 1.0e-06
+
   reconstruct:
-    vertical:
-      type: weno5
-      scale: true
-      shock: true
-    horizontal:
-      type: weno5
-      scale: true
-      shock: true
+    vertical: {type: weno5, scale: true, shock: true}
+    horizontal: {type: weno5, scale: true, shock: true}
+
   riemann-solver:
     type: hllc
+
 boundary-condition:
   external:
     x1-inner: reflecting
@@ -95,85 +86,81 @@ boundary-condition:
     x2-outer: custom
     x3-inner: custom
     x3-outer: custom
+
 integration:
-  type: rk3
-  cfl: 0.2
-  implicit-scheme: 9
-  nlim: -1
-  tlim: 2.65121e9
-  ncycle_out: 10
+    type: rk3
+    cfl: 0.45
+    implicit-scheme: 9
+    nlim: -1
+    tlim: 2.65121e9
+    ncycle_out: 10
+
 outputs:
-- type: restart
-  dt: 8.64e5
-- type: netcdf
-  variables: [prim]
-  dt: 8.64e4
+  - type: restart
+    dt: 8.64e5
+  - type: netcdf
+    variables: [prim]
+    dt: 8.64e4
+
 forcing:
   const-gravity:
     grav1: -8.69
+
   coriolis:
     type: xyz
     omega1: 0.00010119
+
   bot-heat:
     flux: 0.042
     depth: 2
+
 sedimentation:
   radius:
     CH4(s,p): 0.0001
     H2S(s,p): 0.0001
+
   density:
     CH4(s,p): 520.0
     H2S(s,p): 1350.0
+
   const-vsed:
     CH4(s,p): -1.0
     H2S(s,p): -1.0
+
 reactions:
-- equation: CH4 => CH4(s)
-  type: nucleation
-  rate-constant:
-    formula: ch4_ideal
-- equation: CH4(s) => CH4(s,p)
-  type: coagulation
-  rate-constant:
-    A: 0.0001
-    b: 0.0
-    Ea_R: 0.0
-- equation: CH4(s,p) => CH4
-  type: evaporation
-  rate-constant:
-    formula: ch4_ideal
-    diff_c: 2.0e-05
-    diff_T: 0.0
-    diff_P: 0.0
-    vm: 1.6e-05
-    diameter: 0.001
-- equation: H2S => H2S(s)
-  type: nucleation
-  rate-constant:
-    formula: h2s_ideal
-- equation: H2S(s) => H2S(s,p)
-  type: coagulation
-  rate-constant:
-    A: 0.0001
-    b: 0.0
-    Ea_R: 0.0
-- equation: H2S(s,p) => H2S
-  type: evaporation
-  rate-constant:
-    formula: h2s_ideal
-    diff_c: 2.0e-05
-    diff_T: 0.0
-    diff_P: 0.0
-    vm: 3.4e-05
-    diameter: 0.001
+  - equation: CH4 => CH4(s)
+    type: nucleation
+    rate-constant: {formula: ch4_ideal}
+
+  - equation: CH4(s) => CH4(s,p)
+    type: coagulation
+    rate-constant: {A: 1.e-4, b: 0.0, Ea_R: 0.0}
+
+  - equation: CH4(s,p) => CH4
+    type: evaporation
+    rate-constant: {formula: ch4_ideal, diff_c: 2.0e-05, diff_T: 0.0, diff_P: 0.0, vm: 1.6e-05, diameter: 0.001}
+
+  - equation: H2S => H2S(s)
+    type: nucleation
+    rate-constant: {formula: h2s_ideal}
+
+  - equation: H2S(s) => H2S(s,p)
+    type: coagulation
+    rate-constant: {A: 1.e-4, b: 0.0, Ea_R: 0.0}
+
+  - equation: H2S(s,p) => H2S
+    type: evaporation
+    rate-constant: {formula: h2s_ideal, diff_c: 2.0e-05, diff_T: 0.0, diff_P: 0.0, vm: 3.4e-05, diameter: 0.001}
+
 problem:
   Ps: 2062000.0
   Ts: 160.0
   Tmin: 55.0
   xCH4: 0.023
   xH2S: 0.0004
+
 orbit:
-  data: rt/orbital_forcing.pt
+  data: orbital_forcing.pt
   stellar_luminosity: 3.828e26
   semi_major_axis_au: 19.191
   eccentricity: 0.04717
@@ -182,124 +169,95 @@ orbit:
   orbital_period: 2.65121e9
   mean_anomaly_epoch_deg: 0.0
   prime_meridian_epoch_deg: 0.0
+
 radiative-transfer:
   update_dt: 3600.0
-  visible_surface_albedo: 0.0
+  vis_surface_albedo: 0.0
   ir_surface_albedo: 0.0
+
 opacities:
-  gas-visible:
+  gas-vis:
     type: jit
-    data:
-    - rt/gas_visible_opacity.pt
-    species:
-    - dry
-    - CH4
-    - H2S
-    jit_kwargs:
-    - pres
-    - temp
+    data: [gas_vis_opacity.pt]
+    species: [dry, CH4, H2S]
+    jit_kwargs: [pres, temp]
     nmom: 1
     parameters:
       kind: gas
       kappa_ref: 0.001
       p_ref: 1.e5
       exponent: 0.5
+
   gas-ir:
     type: jit
-    data:
-    - rt/gas_ir_opacity.pt
-    species:
-    - dry
-    - CH4
-    - H2S
-    jit_kwargs:
-    - pres
-    - temp
+    data: [gas_ir_opacity.pt]
+    species: [dry, CH4, H2S]
+    jit_kwargs: [pres, temp]
     nmom: 1
     parameters:
       kind: gas
       kappa_ref: 0.005
       p_ref: 1.e5
       exponent: 0.7
-  ch4-visible-cloud:
+
+  ch4-cloud-vis:
     type: jit
-    data:
-    - rt/ch4_visible_cloud_opacity.pt
-    species:
-    - CH4(s)
-    jit_kwargs:
-    - pres
-    - temp
+    data: [ch4_vis_cloud_opacity.pt]
+    species: [CH4(s)]
+    jit_kwargs: [pres, temp]
     nmom: 1
     parameters:
       kind: cloud
       mass_extinction: 100.0
       single_scattering_albedo: 0.99
       asymmetry: 0.75
-  ch4-ir-cloud:
+
+  ch4-cloud-ir:
     type: jit
-    data:
-    - rt/ch4_ir_cloud_opacity.pt
-    species:
-    - CH4(s)
-    jit_kwargs:
-    - pres
-    - temp
+    data: [ch4_ir_cloud_opacity.pt]
+    species: [CH4(s)]
+    jit_kwargs: [pres, temp]
     nmom: 1
     parameters:
       kind: cloud
       mass_extinction: 20.0
       single_scattering_albedo: 0.25
       asymmetry: 0.55
-  h2s-visible-cloud:
+
+  h2s-cloud-vis:
     type: jit
-    data:
-    - rt/h2s_visible_cloud_opacity.pt
-    species:
-    - H2S(s)
-    jit_kwargs:
-    - pres
-    - temp
+    data: [h2s_vis_cloud_opacity.pt]
+    species: [H2S(s)]
+    jit_kwargs: [pres, temp]
     nmom: 1
     parameters:
       kind: cloud
       mass_extinction: 80.0
       single_scattering_albedo: 0.98
       asymmetry: 0.7
-  h2s-ir-cloud:
+
+  h2s-cloud-ir:
     type: jit
-    data:
-    - rt/h2s_ir_cloud_opacity.pt
-    species:
-    - H2S(s)
-    jit_kwargs:
-    - pres
-    - temp
+    data: [h2s_ir_cloud_opacity.pt]
+    species: [H2S(s)]
+    jit_kwargs: [pres, temp]
     nmom: 1
     parameters:
       kind: cloud
       mass_extinction: 15.0
       single_scattering_albedo: 0.2
       asymmetry: 0.5
+
 bands:
-- name: visible
-  range:
-  - 10000.0
-  - 50000.0
-  opacities:
-  - gas-visible
-  - ch4-visible-cloud
-  - h2s-visible-cloud
-  solver: toon
-  nwave: 1
-- name: ir
-  range:
-  - 10.0
-  - 10000.0
-  opacities:
-  - gas-ir
-  - ch4-ir-cloud
-  - h2s-ir-cloud
-  solver: toon
-  flags: planck
-  nwave: 1
+  - name: vis
+    range: [10000.0, 50000.0]
+    opacities: [gas-vis, ch4-cloud-vis, h2s-cloud-vis]
+    solver: toon
+    nwave: 1
+
+  - name: ir
+    range: [10.0, 10000.0]
+    opacities: [gas-ir, ch4-cloud-ir, h2s-cloud-ir]
+    solver: toon
+    flags: planck
+    nwave: 1

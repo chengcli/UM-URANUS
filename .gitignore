@@ -5,7 +5,7 @@ __pycache__
 refs
 
 # data
-rt
+*.pt
 
 # restart files
 *.restart

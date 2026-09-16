@@ -6,7 +6,7 @@ cells per panel. Six panels are distributed as three blocks on each of two GPUs.
 
 ## Radiation and orbit
 
-`run_uranus.py` builds seven serialized TorchScript modules in `rt/`: visible
+`run_uranus.py` builds seven serialized TorchScript modules beside `run_uranus.py`: visible
 and IR gas opacity, visible and IR opacity for each CH4 and H2S cloud, and an
 orbital-forcing module. Gas mass opacity follows
 `kappa = kappa_ref (p / p_ref)^exponent`; nonprecipitating cloud extinction is
@@ -35,10 +35,9 @@ DEVICE=cuda torchrun --standalone --nproc-per-node=2 run_uranus.py \
   --config uranus.yaml --output-dir output
 ```
 
-Use `--rebuild-jit` after changing opacity or orbital parameters (stale
-artifacts are also detected automatically). Resume with `--restart FILE`.
-For a minimal integration check, use `uranus_smoke.yaml` with one process and
-`--max-cycles 1`; the smoke file requires the snapy YAML `include` facility.
+Existing `.pt` files are reused by default. Use `--force-build` after changing
+opacity or orbital parameters; missing files are built automatically. Molecular
+weights come from kintera. Resume with `--restart FILE`.
 
 ## Tests
 
