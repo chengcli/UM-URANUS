@@ -161,7 +161,6 @@ problem:
 
 orbit:
   data: orbital_forcing.pt
-  insolation_data: orbital_insolation.pt2
   stellar_luminosity: 3.828e26
   semi_major_axis_au: 19.191
   eccentricity: 0.04717

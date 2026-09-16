@@ -21,9 +21,9 @@ tunable grey starting values, informed by the pressure-dependent treatment in
 `Zhang_2023_ApJ_957_22.pdf`, rather than calibrated Uranus retrievals.
 
 Uniform internal heating uses snapy's built-in `forcing.bot-heat` module.
-Orbital insolation is separately AOT-compiled into `orbital_insolation.pt2`.
-The same package is loaded by both GPU processes; TorchScript fusion remains
-enabled for the opacity modules.
+Orbital insolation is evaluated through `torch.compile` in Python. Its Inductor
+cache is shared by both GPU processes; TorchScript fusion remains enabled for
+the opacity modules.
 
 ## Run
 
@@ -38,10 +38,10 @@ DEVICE=cuda torchrun --standalone --nproc-per-node=2 run_uranus.py \
   --config uranus.yaml --output-dir output
 ```
 
-Existing `.pt` and `.pt2` files are reused by default. Use `--force-build` after
-changing opacity or orbital parameters or upgrading PyTorch; missing files are
-built automatically. The `.pt2` package targets the configured grid shape,
-float64 contiguous coordinates, and the GPU/PyTorch build used to compile it.
+Existing `.pt` files are reused by default. Use `--force-build` after changing
+opacity or orbital parameters; missing files are built automatically. Inductor
+stores reusable compiled kernels in `.torchinductor_cache/`. Set
+`TORCHINDUCTOR_CACHE_DIR` to override that location.
 Molecular weights come from kintera. Resume with `--restart FILE`.
 The Python runner prints cycle, time, and step size without snapy's GPU
 diagnostic reduction, which currently crashes UCX on this two-GPU setup.
@@ -49,6 +49,6 @@ diagnostic reduction, which currently crashes UCX on this two-GPU setup.
 ## Tests
 
 ```bash
-python -m pytest -q test_orbit_package.py
+python -m pytest -q test_orbit_compile.py
 python -m pytest -q test_uranus.py
 ```

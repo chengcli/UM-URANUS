@@ -4,16 +4,12 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import math
 import os
-import time
 from pathlib import Path
 from typing import Any
 
 import torch
-import torch._inductor
-import torch._inductor.codecache
 import yaml
 
 import pyharp
@@ -95,29 +91,9 @@ def ensure_torchscripts(
     return orbit_path
 
 
-def ensure_orbit_package(config: dict[str, Any], device: torch.device, force_build: bool = False) -> Path:
-    requested_at = time.time_ns()
-    path = (Path(__file__).resolve().parent / config["orbit"]["insolation_data"]).resolve()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_name(path.name + ".lock")
-    with open(lock_path, "a+", encoding="utf-8") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        if not path.exists() or (force_build and path.stat().st_mtime_ns < requested_at):
-            cells = config["geometry"]["cells"]
-            ghost = int(cells["nghost"])
-            shape = (int(cells["nx3"]) + 2 * ghost, int(cells["nx2"]) + 2 * ghost)
-            lon = torch.zeros(shape, dtype=torch.float64, device=device)
-            lat = torch.zeros(shape, dtype=torch.float64, device=device)
-            sample_time = torch.zeros((), dtype=torch.float64, device=device)
-            model = OrbitalInsolation(make_orbit(config["orbit"])).to(device).eval()
-            exported = torch.export.export(model, (lon, lat, sample_time))
-            temporary = path.with_name(f".{path.stem}.{os.getpid()}.pt2")
-            try:
-                torch._inductor.aoti_compile_and_package(exported, package_path=str(temporary))
-                os.replace(temporary, path)
-            finally:
-                temporary.unlink(missing_ok=True)
-    return path
+def compile_orbit(config: dict[str, Any], device: torch.device) -> torch.nn.Module:
+    model = OrbitalInsolation(make_orbit(config["orbit"])).to(device).eval()
+    return torch.compile(model, fullgraph=True)
 
 
 def sync_primitives(variables: dict[str, torch.Tensor], eos: Any) -> None:
@@ -141,8 +117,7 @@ def run(args: argparse.Namespace) -> None:
     device = torch.device(options.device_str())
     mesh.to(device)
     mesh.set_user_stage_forcings([str(orbit_path)])
-    orbit_package = ensure_orbit_package(config, device, args.force_build)
-    orbit_insolation = torch._inductor.aoti_load_package(str(orbit_package), device_index=device.index)
+    orbit_insolation = compile_orbit(config, device)
     thermos = []
     for block in mesh.blocks:
         thermo_y = block.module("hydro.eos.thermo")
