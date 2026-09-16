@@ -52,7 +52,7 @@ def _save_script(module: torch.nn.Module, path: Path) -> None:
 def ensure_torchscripts(
     config: dict[str, Any], config_path: Path, force_build: bool = False, thermo_config_path: Path | None = None
 ) -> Path:
-    ThermoOptions.from_yaml(str(config_path))
+    ThermoOptions.from_yaml(str(thermo_config_path or config_path))
     weights = dict(zip(kintera.species_names(), kintera.species_weights(), strict=True))
     species_indices = {item["name"]: index for index, item in enumerate(config["species"])}
     run_folder = Path(__file__).resolve().parent
@@ -92,6 +92,7 @@ def sync_primitives(variables: dict[str, torch.Tensor], eos: Any) -> None:
 
 
 def run(args: argparse.Namespace) -> None:
+    torch._C._jit_set_texpr_fuser_enabled(False)
     source_config_path = Path(args.config).resolve()
     config = load_config(source_config_path)
     pyharp.add_resource_directory(str(Path(__file__).resolve().parent), prepend=True)
