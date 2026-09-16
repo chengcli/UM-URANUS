@@ -70,3 +70,14 @@ class OrbitalForcing(torch.nn.Module):
         irradiance = self.stellar_luminosity / (4.0 * math.pi * distance * distance)
         beam = torch.where(dayside, torch.ones_like(raw_mu0) * irradiance, torch.zeros_like(raw_mu0))
         return mu0, beam, distance, subsolar_lon, subsolar_lat
+
+
+class OrbitalInsolation(torch.nn.Module):
+    def __init__(self, orbit: OrbitalForcing) -> None:
+        super().__init__()
+        self.orbit = orbit
+
+    def forward(
+        self, lon: torch.Tensor, lat: torch.Tensor, time: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        return self.orbit.insolation(lon, lat, time)

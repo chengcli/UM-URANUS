@@ -4,11 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import math
+import os
+import time
 from pathlib import Path
 from typing import Any
 
 import torch
+import torch._inductor
+import torch._inductor.codecache
 import yaml
 
 import pyharp
@@ -19,7 +24,7 @@ import snapy
 from snapy import Mesh, MeshOptions, kICY, kIPR, kIV1
 
 from opacity import CloudOpacity, GasOpacity
-from orbital import OrbitalForcing
+from orbital import OrbitalForcing, OrbitalInsolation
 from rt_forcing import build_rt_state, compute_heating, mask_nightside_visible_flux
 
 AU = 1.495978707e11
@@ -47,6 +52,15 @@ def load_config(path: str | Path) -> dict[str, Any]:
 def _save_script(module: torch.nn.Module, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.jit.script(module.eval()).save(str(path))
+
+
+def make_orbit(config: dict[str, Any]) -> OrbitalForcing:
+    return OrbitalForcing(
+        config["stellar_luminosity"], config["semi_major_axis_au"] * AU,
+        config["eccentricity"], math.radians(config["obliquity_deg"]), config["rotation_rate"],
+        config["orbital_period"], math.radians(config.get("mean_anomaly_epoch_deg", 0.0)),
+        math.radians(config.get("prime_meridian_epoch_deg", 0.0)),
+    )
 
 
 def ensure_torchscripts(
@@ -77,14 +91,33 @@ def ensure_torchscripts(
     orbit_cfg = config["orbit"]
     orbit_path = (run_folder / orbit_cfg["data"]).resolve()
     if force_build or not orbit_path.exists():
-        module = OrbitalForcing(
-            orbit_cfg["stellar_luminosity"], orbit_cfg["semi_major_axis_au"] * AU,
-            orbit_cfg["eccentricity"], math.radians(orbit_cfg["obliquity_deg"]), orbit_cfg["rotation_rate"],
-            orbit_cfg["orbital_period"], math.radians(orbit_cfg.get("mean_anomaly_epoch_deg", 0.0)),
-            math.radians(orbit_cfg.get("prime_meridian_epoch_deg", 0.0)),
-        )
-        _save_script(module, orbit_path)
+        _save_script(make_orbit(orbit_cfg), orbit_path)
     return orbit_path
+
+
+def ensure_orbit_package(config: dict[str, Any], device: torch.device, force_build: bool = False) -> Path:
+    requested_at = time.time_ns()
+    path = (Path(__file__).resolve().parent / config["orbit"]["insolation_data"]).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".lock")
+    with open(lock_path, "a+", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not path.exists() or (force_build and path.stat().st_mtime_ns < requested_at):
+            cells = config["geometry"]["cells"]
+            ghost = int(cells["nghost"])
+            shape = (int(cells["nx3"]) + 2 * ghost, int(cells["nx2"]) + 2 * ghost)
+            lon = torch.zeros(shape, dtype=torch.float64, device=device)
+            lat = torch.zeros(shape, dtype=torch.float64, device=device)
+            sample_time = torch.zeros((), dtype=torch.float64, device=device)
+            model = OrbitalInsolation(make_orbit(config["orbit"])).to(device).eval()
+            exported = torch.export.export(model, (lon, lat, sample_time))
+            temporary = path.with_name(f".{path.stem}.{os.getpid()}.pt2")
+            try:
+                torch._inductor.aoti_compile_and_package(exported, package_path=str(temporary))
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
+    return path
 
 
 def sync_primitives(variables: dict[str, torch.Tensor], eos: Any) -> None:
@@ -92,7 +125,6 @@ def sync_primitives(variables: dict[str, torch.Tensor], eos: Any) -> None:
 
 
 def run(args: argparse.Namespace) -> None:
-    torch._C._jit_set_texpr_fuser_enabled(False)
     source_config_path = Path(args.config).resolve()
     config = load_config(source_config_path)
     pyharp.add_resource_directory(str(Path(__file__).resolve().parent), prepend=True)
@@ -109,6 +141,8 @@ def run(args: argparse.Namespace) -> None:
     device = torch.device(options.device_str())
     mesh.to(device)
     mesh.set_user_stage_forcings([str(orbit_path)])
+    orbit_package = ensure_orbit_package(config, device, args.force_build)
+    orbit_insolation = torch._inductor.aoti_load_package(str(orbit_package), device_index=device.index)
     thermos = []
     for block in mesh.blocks:
         thermo_y = block.module("hydro.eos.thermo")
@@ -130,11 +164,13 @@ def run(args: argparse.Namespace) -> None:
             hydro_w[kIV1] += 1.0e-6 * torch.randn_like(hydro_w[kIV1])
             initial.append({"hydro_w": hydro_w})
         block_vars, current_time = mesh.initialize(initial)
-    states = [build_rt_state(block, index, config, config_path, orbit_path, device) for index, block in enumerate(mesh.blocks)]
+    states = [build_rt_state(block, index, config, config_path, orbit_insolation, device) for index, block in enumerate(mesh.blocks)]
     for variables in block_vars:
         variables["rt_heating"] = torch.zeros_like(variables["hydro_u"][kIPR])
     integrator = mesh.module("block0.intg")
     cycle = 0
+    report_every = int(config["integration"].get("ncycle_out", 0))
+    process_rank = int(snapy.distributed.get_rank())
     if not args.restart:
         mesh.make_outputs(block_vars, current_time)
     while not integrator.stop(cycle, current_time):
@@ -143,7 +179,8 @@ def run(args: argparse.Namespace) -> None:
         cycle += 1
         mesh.set_cycle(cycle)
         dt = mesh.max_time_step(block_vars)
-        mesh.print_cycle_info(block_vars, current_time, dt)
+        if report_every > 0 and cycle % report_every == 0 and process_rank == 0:
+            print(f"cycle={cycle} time={current_time:.14e} dt={dt:.14e}", flush=True)
         for variables, (eos, _, _) in zip(block_vars, thermos):
             sync_primitives(variables, eos)
         for stage in range(len(integrator.stages)):

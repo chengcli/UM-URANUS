@@ -25,7 +25,7 @@ def mask_nightside_visible_flux(visible_flux: torch.Tensor, mu0: torch.Tensor) -
 class RTState:
     vis_radiation: Radiation
     ir_radiation: Radiation
-    orbit: torch.jit.ScriptModule
+    insolation: Any
     lon: torch.Tensor
     lat: torch.Tensor
     dz: torch.Tensor
@@ -40,7 +40,7 @@ class RTState:
     sw_albedo: float
     lw_albedo: float
 
-def build_rt_state(block: MeshBlock, local_index: int, config: dict[str, Any], config_path: Path, orbit_path: Path, device: torch.device) -> RTState:
+def build_rt_state(block: MeshBlock, local_index: int, config: dict[str, Any], config_path: Path, orbit_insolation: Any, device: torch.device) -> RTState:
     coord = block.module("coord")
     il, iu = coord.il(), coord.iu()
     nlyr = iu - il + 1
@@ -70,7 +70,7 @@ def build_rt_state(block: MeshBlock, local_index: int, config: dict[str, Any], c
     volume = coord.cell_volume()[..., il:iu + 1].reshape(ncol, nlyr)
     rt = config["radiative-transfer"]
     return RTState(
-        vis_radiation, ir_radiation, torch.jit.load(str(orbit_path), map_location=device), lon.to(device), lat.to(device),
+        vis_radiation, ir_radiation, orbit_insolation, lon.to(device).contiguous(), lat.to(device).contiguous(),
         coord.buffer("dx1f")[il:iu + 1].to(device), area.to(device), volume.to(device), il, iu, sw_weight,
         torch.zeros((lon.shape[0], lon.shape[1], nlyr), dtype=lon.dtype, device=device), 0.0,
         float(rt["update_dt"]), float(rt["vis_surface_albedo"]), float(rt["ir_surface_albedo"]),
@@ -87,7 +87,7 @@ def compute_heating(block_vars: dict[str, torch.Tensor], eos: Any, thermo_y: Any
     pres_i = pres[..., state.il:state.iu + 1].reshape(ncol, nlyr).to(torch.float64)
     conc_i = conc[..., state.il:state.iu + 1, :].reshape(ncol, nlyr, conc.shape[-1]).to(torch.float64)
     time = torch.as_tensor(current_time, dtype=state.lon.dtype, device=state.lon.device)
-    mu0, beam, _, _, _ = state.orbit.insolation(state.lon, state.lat, time)
+    mu0, beam, _, _, _ = state.insolation(state.lon, state.lat, time)
     beam = beam.reshape(ncol)
     mu0 = mu0.reshape(ncol)
     safe_mu0 = torch.where(mu0 > 0.0, mu0, torch.ones_like(mu0))
