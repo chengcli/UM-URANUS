@@ -52,3 +52,14 @@ diagnostic reduction, which currently crashes UCX on this two-GPU setup.
 python -m pytest -q test_orbit_compile.py
 python -m pytest -q test_uranus.py
 ```
+
+## Plotting
+
+```bash
+python plot_uranus_overview.py uranus-latlon.00029.nc -o uranus-latlon.00029.png
+```
+
+The cloud panels combine the nonprecipitating and precipitating condensate
+fields for each species. Cloud path integrates density times total condensate
+mass fraction over layer thickness. The first two panels use zonal-mean
+pressure on a logarithmic vertical axis.
