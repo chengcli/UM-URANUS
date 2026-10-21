@@ -70,6 +70,7 @@ dynamics:
     limiter: true
     max-iter: 30
     ftol: 1.0e-06
+    uv-solver: partition
 
   reconstruct:
     vertical: {type: weno5, scale: true, shock: true}

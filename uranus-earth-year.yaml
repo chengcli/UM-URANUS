@@ -1,0 +1,11 @@
+include: uranus.yaml
+
+integration:
+  tlim: 31557600.0
+
+outputs:
+  - type: restart
+    dt: 864000.0
+  - type: netcdf
+    variables: [prim]
+    dt: 86400.0
