@@ -21,7 +21,7 @@ from snapy import Mesh, MeshOptions, kICY, kIPR, kIV1
 
 from opacity import CloudOpacity, GasOpacity
 from orbital import OrbitalForcing
-from rt_forcing import build_rt_state, compute_heating
+from rt_forcing import build_rt_state, compute_heating, radiative_flux_output
 
 AU = 1.495978707e11
 
@@ -135,6 +135,12 @@ def run(args: argparse.Namespace) -> None:
             initial.append({"hydro_w": hydro_w})
         block_vars, current_time = mesh.initialize(initial)
     states = [build_rt_state(block, index, config, config_path, orbit_insolation, device) for index, block in enumerate(mesh.blocks)]
+    for block, thermo, state in zip(mesh.blocks, thermos, states):
+        block.set_user_output_func(
+            lambda variables, thermo=thermo, state=state: radiative_flux_output(
+                variables, *thermo, state, current_time
+            )
+        )
     for variables in block_vars:
         variables["rt_heating"] = torch.zeros_like(variables["hydro_u"][kIPR])
     integrator = mesh.module("block0.intg")

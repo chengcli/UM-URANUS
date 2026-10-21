@@ -39,6 +39,8 @@ class RTState:
     update_dt: float
     sw_albedo: float
     lw_albedo: float
+    visible_flux: torch.Tensor | None = None
+    infrared_flux: torch.Tensor | None = None
 
 def build_rt_state(block: MeshBlock, local_index: int, config: dict[str, Any], config_path: Path, orbit_insolation: Any, device: torch.device) -> RTState:
     coord = block.module("coord")
@@ -108,6 +110,25 @@ def compute_heating(block_vars: dict[str, torch.Tensor], eos: Any, thermo_y: Any
     ir_flux, _, _ = state.ir_radiation.forward(
         conc_i, state.dz.to(torch.float64), ir_bc, atmosphere
     )
+    state.visible_flux = torch.where(
+        (mu0 > 0.0).view(-1, 1, 1),
+        state.vis_radiation.buffer("spectra")[0],
+        0.0,
+    )
+    state.infrared_flux = state.ir_radiation.buffer("spectra")[0].clone()
     net_flux = vis_flux + ir_flux
     divergence = (state.area[:, 1:] * net_flux[:, 1:] - state.area[:, :-1] * net_flux[:, :-1]) / state.volume
     return (-divergence).reshape(state.lon.shape[0], state.lon.shape[1], nlyr).to(hydro_w.dtype)
+
+
+def radiative_flux_output(block_vars, eos, thermo_y, thermo_x, state, current_time):
+    compute_heating(block_vars, eos, thermo_y, thermo_x, state, current_time)
+    output = {}
+    for band, flux in (("vis", state.visible_flux), ("ir", state.infrared_flux)):
+        for direction, index in (("up", 0), ("dn", 1)):
+            faces = flux[..., index].reshape(*state.lon.shape, -1)
+            for side, values in (("lower", faces[..., :-1]), ("upper", faces[..., 1:])):
+                field = torch.zeros_like(block_vars["hydro_w"][kIPR])
+                field[..., state.il:state.iu + 1] = values
+                output[f"{band}_flux_{direction}_{side}"] = field
+    return output
