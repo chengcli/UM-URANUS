@@ -1,13 +1,22 @@
 Radiation and user output
 =========================
 
-The current driver writes daily hydro fields to ``uranus.out1.*.nc`` and
-user variables to ``uranus.out2.*.nc``. Both use Snapy's stitched six-face
-NetCDF layout. Cell-centered fields have dimensions ``(time, x1, x3, x2)``.
-For the production grid this is ``(1, 64, 192, 288)`` per snapshot.
+The driver writes daily hydro slices to ``uranus.out1.*.nc`` (one-quarter),
+``uranus.out3.*.nc`` (one-half), and ``uranus.out4.*.nc`` (three-quarters). Each contains
+density, pressure, all three local velocity components, and CH4/H2S vapor,
+cloud, and precipitation mass fractions. The dimensions are
+``(time, x1, x3, x2)``, with shape ``(1, 1, 192, 288)`` on the production grid.
 
-``out1`` contains density, pressure, all three local velocity components,
-and the CH4/H2S vapor, cloud, and precipitation mass fractions.
+The three ``x1_slice`` radii in ``uranus.yaml`` are at 1/4, 1/2, and 3/4
+of the radial domain measured from its lower boundary: 25619425 m,
+25679850 m, and 25740275 m. These select active cell indices 16, 32,
+and 48 (zero-based) on the 64-layer production grid. Snapy selects
+the cell containing each radius; these are fixed-radius slices, not
+pressure surfaces. Change those radii to choose different layers.
+
+User variables and paths remain in ``uranus.out2.*.nc``. Its cell-centered
+fields retain all 64 layers, while net flux retains all 65 radial faces.
+All files use Snapy's stitched six-face horizontal layout.
 
 ``out2`` contains:
 

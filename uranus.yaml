@@ -99,9 +99,18 @@ outputs:
     dt: 864000.0
   - type: netcdf
     variables: [prim]
+    x1_slice: 25619425.0  # 1/4 of the radial domain
     dt: 86400.0
   - type: netcdf
     variables: [uov, path]
+    dt: 86400.0
+  - type: netcdf
+    variables: [prim]
+    x1_slice: 25679850.0  # 1/2 of the radial domain
+    dt: 86400.0
+  - type: netcdf
+    variables: [prim]
+    x1_slice: 25740275.0  # 3/4 of the radial domain
     dt: 86400.0
 
 forcing:
