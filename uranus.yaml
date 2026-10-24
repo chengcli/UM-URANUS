@@ -101,7 +101,7 @@ outputs:
     variables: [prim]
     dt: 86400.0
   - type: netcdf
-    variables: [uov]
+    variables: [uov, path]
     dt: 86400.0
 
 forcing:

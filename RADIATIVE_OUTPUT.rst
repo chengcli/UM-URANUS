@@ -17,6 +17,21 @@ and the CH4/H2S vapor, cloud, and precipitation mass fractions.
 * ``net_flux``: total upward-minus-downward radiative flux, W/m^2, on
   the ``CCF`` grid (horizontal cell centers and radial faces).
 
+Following the Jupiter case, the ``path`` output writes vapor and condensate
+paths separately for every species:
+
+* Vapor: ``path_CH4``, ``path_H2S``.
+* Cloud condensate: ``path_CH4_s_``, ``path_H2S_s_``.
+* Precipitating condensate: ``path_CH4_s_p_``, ``path_H2S_s_p_``.
+
+These fields have units ``kg/m^2`` and dimensions ``(time, x3, x2)``.
+Snapy integrates species mass over active radial cells and divides by the
+bottom face area, including the spherical geometry:
+
+.. math::
+
+   P_s = \frac{\sum_i \rho_i q_{s,i} V_i}{A_\mathrm{bottom}}.
+
 Net flux includes both shortwave and longwave bands. Its dimensions are
 ``(time, x1f, x3, x2)``, or ``(1, 65, 192, 288)`` for the production grid.
 Each radial interface is stored once, including the bottom and top
@@ -30,8 +45,9 @@ The step is clipped to hourly radiation deadlines and daily output times.
 Radiation is refreshed after moist chemistry at those deadlines, before
 writing the output. Heating remains fixed between solves. Thermal flux can
 be nonzero on the night side; only incident shortwave radiation vanishes.
-Snapy registers ``net_flux`` as ``CCF`` with units ``W/m^2``; this driver
-requires that metadata entry in the installed Snapy library.
+Snapy assigns the ``CCF`` grid and units ``W/m^2`` to names ending in
+``_flux``; this suffix is reserved for energy fluxes. This driver requires
+these suffix rules in the installed Snapy library.
 
 Numbered restart bundles are written every ten days, and a final restart is
 written when the driver finishes. A short ``--max-cycles`` test always writes
