@@ -1,6 +1,6 @@
 reference-state:
   Tref: 0.0
-  Pref: 1.e5
+  Pref: 1.0e+5
 
 species:
   - name: dry
@@ -66,7 +66,6 @@ dynamics:
     type: ideal-moist
     density-floor: 1.0e-10
     pressure-floor: 1.0e-10
-    tracer-floor: 1.0e-12
     limiter: true
     max-iter: 30
     ftol: 1.0e-06
@@ -92,15 +91,18 @@ integration:
     cfl: 0.45
     implicit-scheme: 9
     nlim: -1
-    tlim: 2.65121e9
+    tlim: 31557600.0  # one Earth year (365.25 days)
     ncycle_out: 10
 
 outputs:
   - type: restart
-    dt: 8.64e5
+    dt: 864000.0
   - type: netcdf
     variables: [prim]
-    dt: 8.64e4
+    dt: 86400.0
+  - type: netcdf
+    variables: [uov]
+    dt: 86400.0
 
 forcing:
   const-gravity:
@@ -108,7 +110,7 @@ forcing:
 
   coriolis:
     type: xyz
-    omega1: 0.00010119
+    omega1: -0.0001012371955898186  # retrograde about IAU north
 
   bot-heat:
     flux: 0.042
@@ -159,105 +161,73 @@ problem:
   xCH4: 0.023
   xH2S: 0.0004
 
-orbit:
-  data: orbital_forcing.pt
-  stellar_luminosity: 3.828e26
-  semi_major_axis_au: 19.191
-  eccentricity: 0.04717
-  obliquity_deg: 97.77
-  rotation_rate: 0.00010119
-  orbital_period: 2.65121e9
-  mean_anomaly_epoch_deg: 0.0
-  prime_meridian_epoch_deg: 0.0
-
+# The driver exports device-specific TorchScript artifacts into its output directory.
+# Grey coefficients are illustrative, not a calibrated Uranus spectrum.
 radiative-transfer:
   update_dt: 3600.0
-  vis_surface_albedo: 0.0
-  ir_surface_albedo: 0.0
+  sw_albedo: 0.0
+  lw_albedo: 0.0
 
 opacities:
-  gas-vis:
+  gas-sw:
     type: jit
-    data: [gas_vis_opacity.pt]
+    data: [gas_sw.pt]
     species: [dry, CH4, H2S]
     jit_kwargs: [pres, temp]
     nmom: 1
     parameters:
       kind: gas
-      kappa_ref: 0.001
-      p_ref: 1.e5
-      exponent: 0.5
+      kappa_ref: [0.001, 0.001, 0.001]
+      p_ref: 1.0e+5
+      exponent: [0.5, 0.5, 0.5]
 
-  gas-ir:
+  gas-lw:
     type: jit
-    data: [gas_ir_opacity.pt]
+    data: [gas_lw.pt]
     species: [dry, CH4, H2S]
     jit_kwargs: [pres, temp]
     nmom: 1
     parameters:
       kind: gas
-      kappa_ref: 0.005
-      p_ref: 1.e5
-      exponent: 0.7
+      kappa_ref: [0.005, 0.005, 0.005]
+      p_ref: 1.0e+5
+      exponent: [0.7, 0.7, 0.7]
 
-  ch4-cloud-vis:
+  cloud-sw:
     type: jit
-    data: [ch4_vis_cloud_opacity.pt]
-    species: [CH4(s)]
+    data: [cloud_sw.pt]
+    species: [CH4(s), H2S(s)]
     jit_kwargs: [pres, temp]
     nmom: 1
     parameters:
       kind: cloud
-      mass_extinction: 100.0
-      single_scattering_albedo: 0.99
-      asymmetry: 0.75
+      mass_extinction: [100.0, 80.0]
+      single_scattering_albedo: [0.99, 0.98]
+      asymmetry: [0.75, 0.7]
 
-  ch4-cloud-ir:
+  cloud-lw:
     type: jit
-    data: [ch4_ir_cloud_opacity.pt]
-    species: [CH4(s)]
+    data: [cloud_lw.pt]
+    species: [CH4(s), H2S(s)]
     jit_kwargs: [pres, temp]
     nmom: 1
     parameters:
       kind: cloud
-      mass_extinction: 20.0
-      single_scattering_albedo: 0.25
-      asymmetry: 0.55
-
-  h2s-cloud-vis:
-    type: jit
-    data: [h2s_vis_cloud_opacity.pt]
-    species: [H2S(s)]
-    jit_kwargs: [pres, temp]
-    nmom: 1
-    parameters:
-      kind: cloud
-      mass_extinction: 80.0
-      single_scattering_albedo: 0.98
-      asymmetry: 0.7
-
-  h2s-cloud-ir:
-    type: jit
-    data: [h2s_ir_cloud_opacity.pt]
-    species: [H2S(s)]
-    jit_kwargs: [pres, temp]
-    nmom: 1
-    parameters:
-      kind: cloud
-      mass_extinction: 15.0
-      single_scattering_albedo: 0.2
-      asymmetry: 0.5
+      mass_extinction: [20.0, 15.0]
+      single_scattering_albedo: [0.25, 0.2]
+      asymmetry: [0.55, 0.5]
 
 bands:
-  - name: vis
+  - name: sw
     range: [10000.0, 50000.0]
-    opacities: [gas-vis, ch4-cloud-vis, h2s-cloud-vis]
+    opacities: [gas-sw, cloud-sw]
     solver: toon
     nwave: 1
-
-  - name: ir
+    weights: [1.0]
+  - name: lw
     range: [10.0, 10000.0]
-    opacities: [gas-ir, ch4-cloud-ir, h2s-cloud-ir]
+    opacities: [gas-lw, cloud-lw]
     solver: toon
     flags: planck
     nwave: 1
+    weights: [1.0]
