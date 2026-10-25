@@ -1,5 +1,10 @@
 # UM-URANUS
 
+> Current driver: see [RUN_GLOBAL.rst](RUN_GLOBAL.rst) for the one-Earth-year
+> six-face run and [RADIATIVE_OUTPUT.rst](RADIATIVE_OUTPUT.rst) for current
+> output variables. The implementation and reproduction details below describe
+> the earlier October 21 experiment and are retained as historical records.
+
 Moist cubed-sphere Uranus GCM with CH4 and H2S condensation and pyharp
 two-stream radiation. The production grid has 64 vertical layers and 96 x 96
 cells per panel. Six panels are distributed as three blocks on each of two GPUs.
