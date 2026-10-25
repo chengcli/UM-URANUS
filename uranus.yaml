@@ -17,25 +17,28 @@ species:
     cv_R: 3.5
     u0_R: 0.0
 
+  # Solid caloric parameters match Kintera ch4_ideal at Tref=0.
+  # cv_cond/R = cv_vapor/R + 1 + gamma; u0_cond/R = -beta*T3.
   - name: CH4(s)
     composition: {C: 1, H: 4}
-    cv_R: 4.5
-    u0_R: -980.0
+    cv_R: 5.4
+    u0_R: -943.8747
 
   - name: CH4(s,p)
     composition: {C: 1, H: 4}
-    cv_R: 4.5
-    u0_R: -980.0
+    cv_R: 5.4
+    u0_R: -943.8747
 
+  # Consistent with h2s_ideal; its legacy solid fit is unverified.
   - name: H2S(s)
     composition: {H: 2, S: 1}
-    cv_R: 4.5
-    u0_R: -2250.0
+    cv_R: 9.54
+    u0_R: -2230.9207
 
   - name: H2S(s,p)
     composition: {H: 2, S: 1}
-    cv_R: 4.5
-    u0_R: -2250.0
+    cv_R: 9.54
+    u0_R: -2230.9207
 
 geometry:
   type: gnomonic-equiangle
@@ -87,30 +90,25 @@ boundary-condition:
     x3-outer: custom
 
 integration:
-    type: rk3
-    cfl: 0.45
-    implicit-scheme: 9
-    nlim: -1
-    tlim: 31557600.0  # one Earth year (365.25 days)
-    ncycle_out: 10
+  type: rk3
+  cfl: 0.45
+  implicit-scheme: 9
+  nlim: -1
+  tlim: 31557600.0  # one Earth year (365.25 days)
+  ncycle_out: 10
 
 outputs:
   - type: restart
     dt: 864000.0
+
   - type: netcdf
-    variables: [prim]
-    x1_slice: 25619425.0  # 1/4 of the radial domain
+    variables: [prim, uov, thermo]
+    # 1/4, 1/2 and 3/4 of the radial domain
+    x1_slice: [25619425.0, 25679850.0, 25740275.0]
     dt: 86400.0
+
   - type: netcdf
-    variables: [uov, path]
-    dt: 86400.0
-  - type: netcdf
-    variables: [prim]
-    x1_slice: 25679850.0  # 1/2 of the radial domain
-    dt: 86400.0
-  - type: netcdf
-    variables: [prim]
-    x1_slice: 25740275.0  # 3/4 of the radial domain
+    variables: [path]
     dt: 86400.0
 
 forcing:
@@ -233,6 +231,7 @@ bands:
     solver: toon
     nwave: 1
     weights: [1.0]
+
   - name: lw
     range: [10.0, 10000.0]
     opacities: [gas-lw, cloud-lw]
