@@ -4,10 +4,10 @@ This workspace contains the Uranus driver [`run_uranus.py`](/home/chengcli/scix/
 
 ## Requirements
 
-- Activate the project environment before running checks or simulations:
+- Create the DAIS project environment using the instructions in [AGENTS.md](AGENTS.md), then activate it:
 
   ```bash
-  source ~/kevinsh/env311/bin/activate
+  source .venv/bin/activate
   ```
 
 - Python environment with `torch`, `yaml`, and `snapy` available
@@ -65,6 +65,11 @@ This exercises:
 - restart and NetCDF output paths
 
 ## Single-GPU NCCL RT Test
+
+For a low-resolution test, run `bash run_gpu_smoke.sh` from a shell on
+the allocated GPU node. The launcher uses the repository-local Python
+environment and a `6 × 6` horizontal grid per face. It reports progress every
+10 cycles and caps the run at 10,000,000 cycles.
 
 The RT GPU case can be run on one GPU with 6 cubed-sphere blocks per process:
 
