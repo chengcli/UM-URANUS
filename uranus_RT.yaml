@@ -71,6 +71,7 @@ forcing:
     non-hydrostatic: 0.0
   coriolis:
     type: xyz
+    traditional: true
     omega1: 1.0119154e-4
   top-sponge-lyr:
     tau: 3.5e5

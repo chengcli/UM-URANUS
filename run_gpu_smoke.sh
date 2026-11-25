@@ -9,6 +9,7 @@ if [[ ! -x "$python" ]]; then
 fi
 
 smoke_dir=$(mktemp -d "$PWD/uranus_smoke_output.XXXXXX")
+exec > >(tee "$smoke_dir/run.log") 2>&1
 echo "Smoke test directory: $smoke_dir"
 
 "$python" - "$smoke_dir" <<'PY'
